@@ -1,0 +1,419 @@
+/* ========================================================
+   共通スタイルとリセット
+   ======================================================== */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
+  background-color: #f5f7fa;
+  color: #333;
+  line-height: 1.6;
+  padding-bottom: 40px;
+}
+
+header {
+  background-color: #ffffff;
+  padding: 15px;
+  text-align: center;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+header h1 {
+  font-size: 1.2rem;
+  margin-bottom: 10px;
+  color: #2c3e50;
+}
+
+/* 画面切り替えナビゲーション */
+nav {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+}
+
+nav button {
+  background-color: #e2e8f0;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+nav button.active {
+  background-color: #3182ce;
+  color: white;
+  font-weight: bold;
+}
+
+main {
+  max-width: 600px;
+  margin: 20px auto;
+  padding: 0 15px;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 20px 0;
+}
+
+/* ========================================================
+   1. 階層選択エリア（セレクトボックス）
+   ======================================================== */
+.select-area {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+select {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #cbd5e0;
+  border-radius: 8px;
+  background-color: white;
+  font-size: 1rem;
+}
+
+select:disabled {
+  background-color: #edf2f7;
+  color: #a0aec0;
+  cursor: not-allowed;
+}
+
+/* ========================================================
+   2. 単語カード画面
+   ======================================================== */
+.view-section {
+  display: block;
+}
+
+.view-section.hidden {
+  display: none !important;
+}
+
+/* 単語カード本体 */
+.card-container {
+  perspective: 1000px;
+  margin: 15px 0; /* 余白を調整 */
+}
+
+.card {
+  background-color: white;
+  /* 1remで300文字程度が入るよう、高さを自動伸縮（最小320px）に設定 */
+  height: auto;
+  min-height: 320px;
+  border-radius: 15px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.05), 0 1px 3px rgba(0,0,0,0.1);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 0.2s, background-color 0.2s;
+}
+
+.card:active {
+  transform: scale(0.98);
+}
+
+#card-text {
+  font-size: 1rem; /* 1.5rem から 1rem に変更 */
+  font-weight: bold;
+  word-break: break-word;
+}
+
+/* カードの操作ボタン群 */
+.card-controls {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.card-controls button {
+  flex: 1;
+  padding: 12px;
+  font-size: 1rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 8px;
+  background-color: white;
+  cursor: pointer;
+}
+
+#btn-toggle-answer {
+  background-color: #48bb78;
+  color: white;
+  border: none;
+  font-weight: bold;
+}
+
+/* アクションボタン（覚えた！） */
+.card-actions {
+  text-align: center;
+}
+
+#btn-memorized {
+  width: 100%;
+  padding: 14px;
+  font-size: 1.1rem;
+  background-color: #ecc94b;
+  color: #744210;
+  border: none;
+  border-radius: 8px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+/* ボタンの無効化スタイル共通 */
+button:disabled {
+  background-color: #edf2f7 !important;
+  color: #a0aec0 !important;
+  border: 1px solid #edf2f7 !important;
+  cursor: not-allowed;
+}
+
+/* ========================================================
+   3. 単語一覧画面
+   ======================================================== */
+.list-controls {
+  margin-bottom: 15px;
+  display: flex;
+  gap: 15px;
+}
+
+.table-container {
+  background-color: white;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+th, td {
+  padding: 12px 15px;
+  border-bottom: 1px solid #edf2f7;
+  font-size: 0.95rem;
+}
+
+th {
+  background-color: #edf2f7;
+  color: #4a5568;
+  font-weight: bold;
+}
+
+/* 「意味」列の非表示切り替え用クラス */
+.hide-meaning {
+  display: none;
+}
+/* ========================================================
+   画像表示・複数行テキストのための追加スタイル
+   ======================================================== */
+/* カード内のコンテンツ配置 */
+#card-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  max-height: 100%;
+}
+
+/* カード内の画像サイズ制御 */
+#card-image-container {
+  max-width: 100%;
+  max-height: 110px; /* カード内に収まる高さ */
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+#card-img {
+  max-width: 100%;
+  max-height: 110px;
+  object-fit: contain; /* アスペクト比を維持 */
+}
+
+/* 一覧テーブル内での画像サイズ制御 */
+.list-img {
+  max-height: 50px;
+  display: block;
+  margin-top: 5px;
+  border-radius: 4px;
+}
+
+/* 改行（textareaの入力）を画面上でそのまま反映させる */
+#card-text, td {
+  white-space: pre-wrap;
+}
+/* ========================================================
+   左詰め・フォント調整・文字装飾のための追加スタイル
+   ======================================================== */
+
+/* アプリ全体のフォントサイズ可変の基準（body全体に影響させる） */
+body {
+  transition: font-size 0.1s ease;
+}
+
+/* カード内のテキストとコンテンツを「左詰め」に修正 */
+#word-card {
+  padding: 30px; /* 余白を確保 */
+  display: block; /* 中央揃えのflexからブロック配置に変更 */
+}
+
+#card-content {
+  align-items: flex-start; /* 左寄せ */
+  justify-content: flex-start;
+  text-align: left; /* 文字を左詰め */
+}
+
+#card-text {
+  width: 100%;
+  text-align: left; /* 左寄せ */
+  word-break: break-all;
+}
+
+/* カード内の画像も左寄せ */
+#card-image-container {
+  align-self: flex-start;
+  margin-top: 15px;
+}
+
+/* 単語一覧テーブルの中身もすべて左詰め */
+table th, table td {
+  text-align: left !important;
+  padding: 12px 10px;
+}
+
+/* 文字装飾用ツールボタンの簡易装飾 */
+.decorations button {
+  background: #edf2f7;
+  border: 1px solid #cbd5e0;
+  border-radius: 4px;
+  margin-left: 3px;
+}
+.decorations button:hover {
+  background: #e2e8f0;
+}
+/* ドラッグ移動中の行のスタイル */
+tr.dragging {
+  opacity: 0.5;
+  background-color: #edf2f7;
+}
+.drag-handle {
+  cursor: move;
+  color: #a0aec0;
+  padding: 0 8px;
+  user-select: none;
+}
+.drag-handle:hover {
+  color: #4a5568;
+}
+
+/* モーダル背景 */
+#image-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column; /* ボタンと画像を縦に並べる */
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+/* モーダル内コンテンツの配置枠 */
+.modal-content-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 単語カード本体（.card）の最大幅が通常500px〜600px程度と想定されるため、
+     その90%（10%小さいサイズ）を最大幅としてコンテナを制限します */
+  width: 90%;
+  max-width: 540px; /* 単語カードのwidthが600pxの場合の90% */
+}
+
+/* モーダル表示する画像（指示通りのサイズ制限） */
+#modal-img {
+  width: auto;
+  height: auto;
+  max-width: 100%; /* ラッパー（カードの90%）を超えない */
+  object-fit: contain; /* 縦横比を維持 */
+}
+
+/* 閉じるボタン */
+#btn-close-modal {
+  margin-top: 15px;
+  background-color: #e53e3e;
+  color: white;
+  border: none;
+  padding: 8px 20px;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+#btn-close-modal:hover {
+  background-color: #c53030;
+}
+
+/* 非表示用クラス */
+.hidden {
+  display: none !important;
+}
+
+/* ========================================================
+   単語一覧画面：単語と意味の縦並び表示化
+   ======================================================== */
+
+/* テーブルの行（tr）内の単語と意味を上下に並べる */
+#word-list-tbody tr {
+  border-bottom: 1px solid #e2e8f0;
+}
+
+/* 単語のセルと意味のセルをブロック化して縦に積む */
+#word-list-tbody td:nth-child(2),
+#word-list-tbody td.col-meaning {
+  display: block;
+  width: 100%;
+  border-bottom: none; /* セル間の区切り線を消去 */
+}
+
+/* 単語セル（上側）のスタイル */
+#word-list-tbody td:nth-child(2) {
+  font-weight: bold;
+  font-size: 1.05rem;
+  color: #2c3e50;
+  padding-bottom: 4px; /* 下の意味との間の余白 */
+}
+
+/* 意味セル（下側）のスタイル */
+#word-list-tbody td.col-meaning {
+  font-size: 0.9rem;
+  color: #4a5568;
+  padding-top: 0;      /* 上の単語との余白を調整 */
+  padding-bottom: 12px;
+}
+
+/* 「単語のみ」表示切替時の非表示制御 */
+#word-list-tbody td.col-meaning.hide-meaning {
+  display: none !important;
+}

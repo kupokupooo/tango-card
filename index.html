@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>階層型 単語アプリ</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header>
+    <h1>単語帳アプリ</h1>
+    <!-- 画面切り替えメニュー -->
+    <nav>
+      <button id="btn-card-view" class="active">単語カード</button>
+      <button id="btn-list-view">単語一覧</button>
+      <button id="btn-register-view">単語登録</button>
+    </nav>
+
+    <!-- フォントサイズ調整機能 -->
+    <div class="font-controls" style="margin-top: 10px; display: flex; justify-content: center; align-items: center; gap: 10px; font-size: 0.9rem;">
+      <label>文字サイズ: </label>
+      <button id="btn-font-decrease" style="padding: 2px 8px; cursor: pointer;">小</button>
+      <span id="font-size-display">100%</span>
+      <button id="btn-font-increase" style="padding: 2px 8px; cursor: pointer;">大</button>
+    </div>
+
+    <!-- 同期用ファイル操作ボタン -->
+    <div class="sync-controls" style="margin-top: 10px; display: flex; justify-content: center; gap: 10px;">
+      <button id="btn-export" style="padding: 6px 12px; background-color: #4a5568; color: white; border: none; border-radius: 4px; font-size: 0.85rem; cursor: pointer;">データを書き出す (保存)</button>
+      <button id="btn-import-trigger" style="padding: 6px 12px; background-color: #718096; color: white; border: none; border-radius: 4px; font-size: 0.85rem; cursor: pointer;">データを読み込む (同期)</button>
+      <input type="file" id="file-import" accept=".json" style="display: none;">
+    </div>
+  </header>
+
+  <main>
+    <!-- 1. 共通の階層選択エリア（大・中・小項目） -->
+    <section class="select-area">
+      <select id="select-large"><option value="">大項目を選択</option></select>
+      <select id="select-medium" disabled><option value="">中項目を選択</option></select>
+      <select id="select-small" disabled><option value="">小項目を選択</option></select>
+    </section>
+
+    <hr>
+
+<!-- 2. 単語カード画面 -->
+    <section id="card-view" class="view-section">
+      <!-- 1. 操作ボタン群を上に移動 -->
+      <div class="card-controls" style="margin-top: 15px; margin-bottom: 15px;">
+        <button id="btn-prev" disabled>前へ</button>
+        <button id="btn-toggle-answer" disabled>意味を見る</button>
+        <button id="btn-next" disabled>次へ</button>
+      </div>
+
+      <!-- 2. 単語カード本体をボタンの下に配置 -->
+      <div class="card-container">
+        <div id="word-card" class="card">
+          <div id="card-content">
+            <!-- テキスト表示エリア -->
+            <div id="card-text">小項目を選択してください</div>
+            <!-- 意味の表示時に画像があればここに表示される -->
+            <div id="card-image-container" class="hidden">
+              <img id="card-img" src="" alt="取り込み画像">
+            </div>
+          </div>
+        </div>
+        <!-- ★追加: 画像拡大ボタン（デフォルトは非表示） -->
+        <div style="text-align: center; margin: 10px 0;">
+            <button id="btn-zoom-image" class="hidden" style="background-color: #4a5568; color: white; padding: 6px 14px; border-radius: 4px; font-size: 0.9rem; cursor: pointer; border: none;">🔍 画像拡大</button>
+        </div>
+      </div>
+
+      <!-- 覚えた！ボタン -->
+      <div class="card-actions" style="margin-top: 15px;">
+        <button id="btn-memorized" disabled>覚えた！</button>
+      </div>
+    </section>
+
+    <!-- 3. 単語一覧画面 -->
+    <section id="list-view" class="view-section hidden">
+      <div class="list-controls" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+        <div>
+          <label><input type="radio" name="list-type" value="all" checked> 単語と意味</label>
+          <label><input type="radio" name="list-type" value="word-only"> 単語のみ</label>
+        </div>
+        <!-- 並べ替えボタン -->
+        <div style="display: flex; gap: 5px;">
+          <button id="btn-sort-asc" style="padding: 4px 8px; font-size: 0.8rem; cursor: pointer;">🔤 辞書順 (A-Z)</button>
+          <button id="btn-sort-time" style="padding: 4px 8px; font-size: 0.8rem; cursor: pointer;">⏱ 登録順</button>
+        </div>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+              <tr>
+                <th style="width: 40px;">↕️</th>
+                <th>単語 / 意味</th> <!-- ★「単語」から「単語 / 意味」に変更 -->
+                <th style="width: 140px;">操作</th>
+              </tr>
+          </thead>
+          <tbody id="word-list-tbody">
+            <!-- JavaScriptでここに単語一覧を挿入する -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 4. 単語登録画面（独立タブ） -->
+    <section id="register-view" class="view-section hidden" style="background-color: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+      <h2 id="register-headline" style="font-size: 1.1rem; margin-bottom: 15px; color: #2c3e50;">➕ 新しい単語・項目の登録</h2>
+
+        <!-- 修正モード時の案内（通常時は隠す） -->
+        <div id="edit-mode-notice" class="hidden" style="display: none; background-color: #feebc8; color: #c05621; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 0.85rem; font-weight: bold;">
+          ⚠️ 現在【単語の修正モード】です。内容を書き換えて下の「修正を確定する」を押してください。（カテゴリの変更はできません）
+        </div>
+
+      <div id="register-category-area" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;">
+        <div>
+          <label style="font-size: 0.85rem; font-weight: bold; display:block; margin-bottom:4px;">1. 大項目（既存から選択、または新規入力）</label>
+          <select id="reg-large" style="margin-bottom: 5px;"><option value="">-- 既存の大項目 --</option></select>
+          <input type="text" id="new-large" placeholder="新しい大項目名を作る場合に入力" style="width: 100%; padding: 8px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.9rem;">
+        </div>
+
+        <div>
+          <label style="font-size: 0.85rem; font-weight: bold; display:block; margin-bottom:4px;">2. 中項目（既存から選択、または新規入力）</label>
+          <select id="reg-medium" style="margin-bottom: 5px;" disabled><option value="">-- 既存の中項目 --</option></select>
+          <input type="text" id="new-medium" placeholder="新しい中項目名を作る場合に入力" style="width: 100%; padding: 8px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.9rem;">
+        </div>
+
+        <div>
+          <label style="font-size: 0.85rem; font-weight: bold; display:block; margin-bottom:4px;">3. 小項目（既存から選択、または新規入力）</label>
+          <select id="reg-small" style="margin-bottom: 5px;" disabled><option value="">-- 既存の小項目 --</option></select>
+          <input type="text" id="new-small" placeholder="新しい小項目名を作る場合に入力" style="width: 100%; padding: 8px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.9rem;">
+        </div>
+      </div>
+
+      <hr id="register-hr" style="margin: 15px 0; border-top: 1px dashed #e2e8f0;">
+
+      <!-- 単語・意味と画像取り込み -->
+      <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;">
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="font-size: 0.85rem; font-weight: bold;">単語（縦幅3行分）</label>
+            <!-- 文字装飾ツールバー（単語用） -->
+            <div class="decorations" data-target="input-word">
+              <button type="button" class="btn-deco-bold" style="font-weight: bold; padding: 2px 6px; font-size: 0.75rem; cursor: pointer;">太字</button>
+              <button type="button" class="btn-deco-red" style="color: red; padding: 2px 6px; font-size: 0.75rem; cursor: pointer;">赤文字</button>
+              <button type="button" class="btn-deco-blue" style="color: blue; padding: 2px 6px; font-size: 0.75rem; cursor: pointer;">青文字</button>
+            </div>
+          </div>
+          <textarea id="input-word" rows="3" placeholder="単語を入力してください" style="width: 100%; padding: 10px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 1rem; resize: vertical;"></textarea>
+        </div>
+
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <label style="font-size: 0.85rem; font-weight: bold;">意味（縦幅6行分）</label>
+            <!-- 文字装飾ツールバー（意味用） -->
+            <div class="decorations" data-target="input-meaning">
+              <button type="button" class="btn-deco-bold" style="font-weight: bold; padding: 2px 6px; font-size: 0.75rem; cursor: pointer;">太字</button>
+              <button type="button" class="btn-deco-red" style="color: red; padding: 2px 6px; font-size: 0.75rem; cursor: pointer;">赤文字</button>
+              <button type="button" class="btn-deco-blue" style="color: blue; padding: 2px 6px; font-size: 0.75rem; cursor: pointer;">青文字</button>
+            </div>
+          </div>
+          <textarea id="input-meaning" rows="6" placeholder="意味を入力してください" style="width: 100%; padding: 10px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 1rem; resize: vertical;"></textarea>
+        </div>
+
+        <div>
+          <label style="font-size: 0.85rem; font-weight: bold; display:block; margin-bottom:4px;">📷 意味に画像を取り込む (iPhone撮影・写真対応)</label>
+          <input type="file" id="input-image" accept="image/*" style="width: 100%; font-size: 0.9rem; margin-bottom: 8px;">
+          <div id="img-preview-container" class="hidden" style="text-align: center; border: 1px dashed #cbd5e0; padding: 10px; border-radius: 6px;">
+            <p style="font-size: 0.8rem; color: #718096; margin-bottom: 5px;">選択された画像プレビュー:</p>
+            <img id="img-preview" src="" alt="プレビュー" style="max-height: 120px; border-radius: 4px;">
+            <button type="button" id="btn-clear-image" style="display: block; margin: 5px auto 0; padding: 2px 8px; font-size: 0.75rem; background-color: #e53e3e; color: white; border: none; border-radius: 4px; cursor: pointer;">画像を消去</button>
+          </div>
+        </div>
+      </div>
+
+      <button id="btn-register" style="width: 100%; padding: 12px; background-color: #3182ce; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer;">この内容で登録する</button>
+      <button id="btn-cancel-edit" class="hidden" style="width: 100%; padding: 10px; background-color: #e2e8f0; color: #4a5568; border: none; border-radius: 8px; font-size: 0.9rem; font-weight: bold; cursor: pointer; margin-top: 8px;">修正を取り消す</button>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+  <!-- 画像拡大用のモーダル (インラインの display:flex; を外しCSSクラスで制御) -->
+  <div id="image-modal" class="modal hidden" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000;">
+    <img id="modal-img" src="" alt="拡大画像" style="max-width: 90%; max-height: 90%; object-fit: contain;">
+  </div>
+
+</body>
+</html>
