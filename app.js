@@ -28,32 +28,116 @@ let wordData = {
 };
 
 // ========================================================
-// 2. ローカルストレージ連携
+// 2. IndexedDB 制御モジュール
 // ========================================================
-const STORAGE_KEY = "hierarchical_word_app_data";
-function saveToLocalStorage() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(wordData));
+const DB_NAME = "TangoCardDB";
+const DB_VERSION = 1;
+const STORE_NAME = "app_data";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME);
+      }
+    };
+    request.onsuccess = (event) => resolve(event.target.result);
+    request.onerror = (event) => reject(event.target.error);
+  });
 }
-function loadFromLocalStorage() {
-  const localData = localStorage.getItem(STORAGE_KEY);
-  if (localData) {
-    try { wordData = JSON.parse(localData); } catch (e) { console.error("データ破損のため初期データを使用します", e); }
+
+async function loadDataFromDB() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get("wordData");
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// 既存コードとの互換性を保つための IndexedDB 保存関数
+async function saveToLocalStorage() {
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      store.put(wordData, "wordData");
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.error("IndexedDBへの保存に失敗しました:", err);
   }
 }
-loadFromLocalStorage();
+
+async function initAppData() {
+  try {
+    const dbData = await loadDataFromDB();
+    if (dbData) {
+      wordData = dbData;
+    } else {
+      const localData = localStorage.getItem("wordData");
+      if (localData) {
+        wordData = JSON.parse(localData);
+        await saveToLocalStorage();
+      } else {
+        await saveToLocalStorage();
+      }
+    }
+    if (typeof initLargeSelect === "function") initLargeSelect();
+    if (typeof initRegisterSelects === "function") initRegisterSelects();
+  } catch (err) {
+    console.error("データ初期化失敗:", err);
+  }
+}
+
+initAppData();
 
 // ========================================================
-// 3. アプリの状態管理 (State)
+// 3. 画像の自動圧縮ロジック（縦横比維持・最大幅 400px）
 // ========================================================
-let currentItems = [];
-let currentCardIndex = 0;
-let isShowingAnswer = false;
-let currentSmallId = "";
-let currentSortType = "time"; // "time" (登録順) または "asc" (辞書順)
-let currentFontSize = 100;    // %表示
-let editingItemId = null;     // 修正中のアイテムID（nullなら新規登録モード）
+function compressImage(file, maxWidth = 400) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target.result;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
 
-// HTML特殊文字を安全にしつつ、特定の装飾タグだけ復活させる関数
+        if (width > maxWidth || height > maxWidth) {
+          if (width > height) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          } else {
+            width = Math.round((width * maxWidth) / height);
+            height = maxWidth;
+          }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const compressedBase64 = canvas.toDataURL("image/jpeg", 0.85);
+        resolve(compressedBase64);
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+}
+
+// HTML特殊文字のエスケープ処理
 function safeHTML(str) {
   if (!str) return "";
   let escaped = str
@@ -63,15 +147,24 @@ function safeHTML(str) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
   escaped = escaped.replace(/&lt;b&gt;/gi, "<b>").replace(/&lt;\/b&gt;/gi, "</b>");
-  escaped = escaped.replace(/&lt;span style=&quot;color:red;&quot;&gt;/gi, '<span style="color:red;">');
-  escaped = escaped.replace(/&lt;span style=&quot;color:blue;&quot;&gt;/gi, '<span style="color:blue;">');
+  escaped = escaped.replace(/&lt;span style=&#039;color:red;&#039;&gt;/gi, '<span style="color:red;">');
+  escaped = escaped.replace(/&lt;span style=&#039;color:blue;&#039;&gt;/gi, '<span style="color:blue;">');
   escaped = escaped.replace(/&lt;\/span&gt;/gi, "</span>");
   return escaped;
 }
 
 // ========================================================
-// 4. DOM要素の取得
+// 4. アプリの状態管理 (State) ＆ DOM要素取得
 // ========================================================
+let currentItems = [];
+let currentCardIndex = 0;
+let isShowingAnswer = false;
+let currentSmallId = "";
+let currentSortType = "time";
+let currentFontSize = 100;
+let editingItemId = null;
+let base64ImageData = ""; // 画像データの保持用変数
+
 const selectLarge = document.getElementById("select-large");
 const selectMedium = document.getElementById("select-medium");
 const selectSmall = document.getElementById("select-small");
@@ -86,18 +179,12 @@ const btnToggleAnswer = document.getElementById("btn-toggle-answer");
 const btnNext = document.getElementById("btn-next");
 const btnMemorized = document.getElementById("btn-memorized");
 
-const wordListTbody = document.getElementById("word-list-tbody");
-
 const cardImageContainer = document.getElementById("card-image-container");
 const cardImg = document.getElementById("card-img");
-const imageModal = document.getElementById("image-modal");
-const modalImg = document.getElementById("modal-img");
-
-// 追加: 画像拡大ボタンの取得
 const btnZoomImage = document.getElementById("btn-zoom-image");
 
 // ========================================================
-// 5. フォントサイズ変更機能のロジック
+// 5. フォントサイズ変更機能
 // ========================================================
 const btnFontDecrease = document.getElementById("btn-font-decrease");
 const btnFontIncrease = document.getElementById("btn-font-increase");
@@ -112,17 +199,22 @@ if (localStorage.getItem("app_font_size")) {
   currentFontSize = parseInt(localStorage.getItem("app_font_size"), 10);
   applyFontSize();
 }
-btnFontDecrease.addEventListener("click", () => {
-  if (currentFontSize > 70) { currentFontSize -= 10; applyFontSize(); }
-});
-btnFontIncrease.addEventListener("click", () => {
-  if (currentFontSize < 200) { currentFontSize += 10; applyFontSize(); }
-});
+if (btnFontDecrease) {
+  btnFontDecrease.addEventListener("click", () => {
+    if (currentFontSize > 70) { currentFontSize -= 10; applyFontSize(); }
+  });
+}
+if (btnFontIncrease) {
+  btnFontIncrease.addEventListener("click", () => {
+    if (currentFontSize < 200) { currentFontSize += 10; applyFontSize(); }
+  });
+}
 
 // ========================================================
-// 6. 3階層連動プルダウンロジック
+// 6. プルダウン連携ロジック
 // ========================================================
 function initLargeSelect() {
+  if (!selectLarge) return;
   selectLarge.innerHTML = '<option value="">大項目を選択</option>';
   wordData.categories.forEach(cat => {
     const opt = document.createElement("option");
@@ -136,63 +228,70 @@ function initLargeSelect() {
   selectSmall.disabled = true;
 }
 
-selectLarge.addEventListener("change", (e) => {
-  const largeId = e.target.value;
-  selectMedium.innerHTML = '<option value="">中項目を選択</option>';
-  selectSmall.innerHTML = '<option value="">小項目を選択</option>';
-  selectSmall.disabled = true;
+if (selectLarge) {
+  selectLarge.addEventListener("change", (e) => {
+    const largeId = e.target.value;
+    selectMedium.innerHTML = '<option value="">中項目を選択</option>';
+    selectSmall.innerHTML = '<option value="">小項目を選択</option>';
+    selectSmall.disabled = true;
 
-  if (!largeId) { selectMedium.disabled = true; resetCardViewStatus("大項目を選択してください"); return; }
+    if (!largeId) { selectMedium.disabled = true; resetCardViewStatus("大項目を選択してください"); return; }
 
-  const largeCat = wordData.categories.find(c => c.id === largeId);
-  if (largeCat && largeCat.subcategories) {
-    largeCat.subcategories.forEach(sub => {
-      const opt = document.createElement("option");
-      opt.value = sub.id;
-      opt.textContent = sub.name;
-      selectMedium.appendChild(opt);
-    });
-    selectMedium.disabled = false;
-  }
-  resetCardViewStatus("中項目を選択してください");
-});
+    const largeCat = wordData.categories.find(c => c.id === largeId);
+    if (largeCat && largeCat.subcategories) {
+      largeCat.subcategories.forEach(sub => {
+        const opt = document.createElement("option");
+        opt.value = sub.id;
+        opt.textContent = sub.name;
+        selectMedium.appendChild(opt);
+      });
+      selectMedium.disabled = false;
+    }
+    resetCardViewStatus("中項目を選択してください");
+  });
+}
 
-selectMedium.addEventListener("change", (e) => {
-  const largeId = selectLarge.value;
-  const mediumId = e.target.value;
-  selectSmall.innerHTML = '<option value="">小項目を選択</option>';
+if (selectMedium) {
+  selectMedium.addEventListener("change", (e) => {
+    const largeId = selectLarge.value;
+    const mediumId = e.target.value;
+    selectSmall.innerHTML = '<option value="">小項目を選択</option>';
 
-  if (!mediumId) { selectSmall.disabled = true; resetCardViewStatus("中項目を選択してください"); return; }
+    if (!mediumId) { selectSmall.disabled = true; resetCardViewStatus("中項目を選択してください"); return; }
 
-  const largeCat = wordData.categories.find(c => c.id === largeId);
-  const mediumCat = largeCat.subcategories.find(s => s.id === mediumId);
-  if (mediumCat && mediumCat.sections) {
-    mediumCat.sections.forEach(sec => {
-      const opt = document.createElement("option");
-      opt.value = sec.id;
-      opt.textContent = sec.name;
-      selectSmall.appendChild(opt);
-    });
-    selectSmall.disabled = false;
-  }
-  resetCardViewStatus("小項目を選択してください");
-});
+    const largeCat = wordData.categories.find(c => c.id === largeId);
+    const mediumCat = largeCat.subcategories.find(s => s.id === mediumId);
+    if (mediumCat && mediumCat.sections) {
+      mediumCat.sections.forEach(sec => {
+        const opt = document.createElement("option");
+        opt.value = sec.id;
+        opt.textContent = sec.name;
+        selectSmall.appendChild(opt);
+      });
+      selectSmall.disabled = false;
+    }
+    resetCardViewStatus("小項目を選択してください");
+  });
+}
 
-selectSmall.addEventListener("change", (e) => {
-  currentSmallId = e.target.value;
-  if (!currentSmallId) { resetCardViewStatus("小項目を選択してください"); currentItems = []; return; }
+if (selectSmall) {
+  selectSmall.addEventListener("change", (e) => {
+    currentSmallId = e.target.value;
+    if (!currentSmallId) { resetCardViewStatus("小項目を選択してください"); currentItems = []; return; }
 
-  const largeCat = wordData.categories.find(c => c.id === selectLarge.value);
-  const mediumCat = largeCat.subcategories.find(s => s.id === selectMedium.value);
-  const section = mediumCat.sections.find(sec => sec.id === currentSmallId);
+    const largeCat = wordData.categories.find(c => c.id === selectLarge.value);
+    const mediumCat = largeCat.subcategories.find(s => s.id === selectMedium.value);
+    const section = mediumCat.sections.find(sec => sec.id === currentSmallId);
 
-  if (section) {
-    currentItems = section.items || [];
-    applySorting();
-  }
-});
+    if (section) {
+      currentItems = section.items || [];
+      applySorting();
+    }
+  });
+}
 
 function resetCardViewStatus(message) {
+  if (!cardText) return;
   cardText.innerHTML = message;
   btnPrev.disabled = true;
   btnToggleAnswer.disabled = true;
@@ -202,7 +301,7 @@ function resetCardViewStatus(message) {
 }
 
 // ========================================================
-// 7. 単語カード画面の描画・操作ロジック
+// 7. 単語カード描画・表示制御
 // ========================================================
 function updateCardView() {
   if (currentItems.length === 0) {
@@ -214,8 +313,6 @@ function updateCardView() {
   isShowingAnswer = false;
   btnToggleAnswer.textContent = "意味を見る";
   cardText.innerHTML = safeHTML(item.word);
-
-// ★追加: 「単語」表示の初期状態に戻るため、背景色をリセット
   wordCard.style.backgroundColor = "";
 
   btnPrev.disabled = currentCardIndex === 0;
@@ -235,81 +332,84 @@ function updateCardView() {
   hideCardImage();
 }
 
-// 意味を見る・単語を見るの切り替え
-btnToggleAnswer.addEventListener("click", () => {
-  if (currentItems.length === 0) return;
-  const item = currentItems[currentCardIndex];
-  isShowingAnswer = !isShowingAnswer;
+if (btnToggleAnswer) {
+  btnToggleAnswer.addEventListener("click", () => {
+    if (currentItems.length === 0) return;
+    const item = currentItems[currentCardIndex];
+    isShowingAnswer = !isShowingAnswer;
 
-  if (isShowingAnswer) {
-    cardText.innerHTML = safeHTML(item.meaning);
-    btnToggleAnswer.textContent = "単語を見る";
+    if (isShowingAnswer) {
+      cardText.innerHTML = safeHTML(item.meaning);
+      btnToggleAnswer.textContent = "単語を見る";
+      wordCard.style.backgroundColor = "#FFFAF0";
+      showCardImage(item.image);
+    } else {
+      cardText.innerHTML = safeHTML(item.word);
+      btnToggleAnswer.textContent = "意味を見る";
+      wordCard.style.backgroundColor = "";
+      hideCardImage();
+    }
+  });
+}
 
-    // ★追加: 「意味」表示のときに背景色を #FFFAF0 に変更
-    wordCard.style.backgroundColor = "#FFFAF0";
+if (btnPrev) {
+  btnPrev.addEventListener("click", () => {
+    if (currentCardIndex > 0) {
+      currentCardIndex--;
+      updateCardView();
+    }
+  });
+}
 
-    showCardImage(item.image);
-  } else {
-    cardText.innerHTML = safeHTML(item.word);
-    btnToggleAnswer.textContent = "意味を見る";
+if (btnNext) {
+  btnNext.addEventListener("click", () => {
+    if (currentCardIndex < currentItems.length - 1) {
+      currentCardIndex++;
+      updateCardView();
+    }
+  });
+}
 
-    // ★追加: 「単語」表示に戻ったら背景色をクリア（元のCSS準拠にする）
-    wordCard.style.backgroundColor = "";
-
-    hideCardImage();
-  }
-});
-
-// 「前へ」ボタン
-btnPrev.addEventListener("click", () => {
-  if (currentCardIndex > 0) {
-    currentCardIndex--;
+if (btnMemorized) {
+  btnMemorized.addEventListener("click", () => {
+    if (currentItems.length === 0) return;
+    const item = currentItems[currentCardIndex];
+    item.memorized = !item.memorized;
+    saveToLocalStorage();
     updateCardView();
-  }
-});
+  });
+}
 
-// 「次へ」ボタン
-btnNext.addEventListener("click", () => {
-  if (currentCardIndex < currentItems.length - 1) {
-    currentCardIndex++;
-    updateCardView();
-  }
-});
+if (wordCard) {
+  wordCard.addEventListener("click", (e) => {
+    if (currentItems.length === 0 || btnToggleAnswer.disabled) return;
+    if (e.target.id === 'card-img' || (cardImageContainer && cardImageContainer.contains(e.target))) {
+      return;
+    }
+    btnToggleAnswer.click();
+  });
+}
 
-// 「覚えた！」ボタン
-btnMemorized.addEventListener("click", () => {
-  if (currentItems.length === 0) return;
-  const item = currentItems[currentCardIndex];
-  item.memorized = !item.memorized;
-  saveToLocalStorage();
-  updateCardView();
-});
+function hideCardImage() {
+  if (!cardImageContainer) return;
+  cardImageContainer.classList.add("hidden");
+  cardImageContainer.style.display = "none";
+  if (cardImg) cardImg.removeAttribute('src');
+  if (btnZoomImage) btnZoomImage.classList.add("hidden");
+}
 
-// カード全体のタップイベント（画像以外がタップされた時だけ反転させる）
-wordCard.addEventListener("click", (e) => {
-  if (currentItems.length === 0 || btnToggleAnswer.disabled) return;
+function showCardImage(b64Data) {
+  if (!b64Data || !cardImageContainer || !cardImg) { hideCardImage(); return; }
+  cardImg.src = b64Data;
+  cardImageContainer.classList.remove("hidden");
+  cardImageContainer.style.display = "block";
+  if (btnZoomImage) btnZoomImage.classList.remove("hidden");
+}
 
-  // タップされた要素が、画像(card-img)または画像コンテナ内部の場合は反転処理を一切スキップ
-  if (e.target.id === 'card-img' || cardImageContainer.contains(e.target)) {
-    return;
-  }
-
-  btnToggleAnswer.click();
-});
-
-// ========================================================
-// 7. 単語カード画面の描画・操作ロジック（モーダル修正版）
-// ========================================================
-
-// 【修正・強化】モーダル表示処理の共通関数
+// モーダル表示機能
 function openImageModal(imgSrc) {
-  // 有効な画像データ（Base64含む）があるかチェック
-  if (!imgSrc || imgSrc === window.location.href || imgSrc.endsWith('/')) {
-    console.warn("拡大する画像データがありません");
-    return;
-  }
+  if (!imgSrc || imgSrc === window.location.href || imgSrc.endsWith('/')) return;
 
-  // もしHTML側に #image-modal が存在しない場合は動的に生成する
   let targetModal = document.getElementById("image-modal");
   if (!targetModal) {
     targetModal = document.createElement("div");
@@ -317,7 +417,6 @@ function openImageModal(imgSrc) {
     document.body.appendChild(targetModal);
   }
 
-  // 指示通りの仕様（縦横比維持・カード本体幅の10%引きを上限）を満たす構造を強制注入
   targetModal.innerHTML = `
     <div class="modal-content-wrapper">
       <img id="modal-img" src="${imgSrc}" alt="拡大画像" />
@@ -325,11 +424,9 @@ function openImageModal(imgSrc) {
     </div>
   `;
 
-  // モーダルを表示（hiddenクラスを確実に除去し、flex配置にする）
   targetModal.classList.remove('hidden');
   targetModal.style.display = 'flex';
 
-  // 閉じるボタンのイベントを設定
   const closeBtn = targetModal.querySelector('#btn-close-modal');
   if (closeBtn) {
     closeBtn.addEventListener('click', (e) => {
@@ -340,7 +437,6 @@ function openImageModal(imgSrc) {
     });
   }
 
-  // 背景エリアをタップしても閉じられるように設定
   targetModal.onclick = function(e) {
     if (e.target === targetModal) {
       targetModal.classList.add('hidden');
@@ -349,22 +445,14 @@ function openImageModal(imgSrc) {
   };
 }
 
-// 【修正】「画像拡大」ボタンのクリックイベント
 if (btnZoomImage) {
   btnZoomImage.addEventListener('click', (e) => {
     e.preventDefault();
-    e.stopPropagation(); // 親要素（カード反転など）へのイベント伝播を完全に阻止
-
-    // 現在カードに表示されている画像ソースを取得して渡す
-    if (cardImg && cardImg.src) {
-      openImageModal(cardImg.src);
-    } else {
-      alert("拡大する画像がありません。");
-    }
+    e.stopPropagation();
+    if (cardImg && cardImg.src) openImageModal(cardImg.src);
   });
 }
 
-// カードの画像を直接タップした時も同じ仕様で動くように補正
 if (cardImg) {
   cardImg.addEventListener('click', (e) => {
     e.preventDefault();
@@ -374,10 +462,11 @@ if (cardImg) {
 }
 
 // ========================================================
-// 8. 単語一覧の描画（ドラッグ＆ドロップ機能付き）
+// 8. 単語一覧描画＆ドラッグ移動
 // ========================================================
 function updateListView() {
   const tbody = document.getElementById("word-list-tbody");
+  if (!tbody) return;
   tbody.innerHTML = "";
 
   if (currentItems.length === 0) {
@@ -394,7 +483,7 @@ function updateListView() {
 
     const tdDrag = document.createElement("td");
     tdDrag.className = "drag-handle";
-    tdDrag.innerHTML = "☰";
+    tdDrag.innerHTML = "≡";
     tr.appendChild(tdDrag);
 
     const tdWord = document.createElement("td");
@@ -437,7 +526,6 @@ function updateListView() {
     tr.addEventListener("dragover", (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
-
       const bounding = tr.getBoundingClientRect();
       const offset = e.clientY - bounding.top;
       if (offset > bounding.height / 2) {
@@ -461,7 +549,6 @@ function updateListView() {
 
       const fromIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
       const toIndex = index;
-
       if (fromIndex === toIndex) return;
 
       const targetItem = currentItems.splice(fromIndex, 1)[0];
@@ -502,24 +589,20 @@ function applySorting() {
       const wB = b.word.replace(/<[^>]*>/g, "").toLowerCase();
       return wA.localeCompare(wB, 'ja');
     });
-    btnSortAsc.style.background = "#3182ce";
-    btnSortAsc.style.color = "white";
-    btnSortTime.style.background = "#edf2f7";
-    btnSortTime.style.color = "black";
+    if (btnSortAsc) { btnSortAsc.style.background = "#3182ce"; btnSortAsc.style.color = "white"; }
+    if (btnSortTime) { btnSortTime.style.background = "#edf2f7"; btnSortTime.style.color = "black"; }
   } else {
     currentItems.sort((a, b) => a.id.localeCompare(b.id));
-    btnSortTime.style.background = "#3182ce";
-    btnSortTime.style.color = "white";
-    btnSortAsc.style.background = "#edf2f7";
-    btnSortAsc.style.color = "black";
+    if (btnSortTime) { btnSortTime.style.background = "#3182ce"; btnSortTime.style.color = "white"; }
+    if (btnSortAsc) { btnSortAsc.style.background = "#edf2f7"; btnSortAsc.style.color = "black"; }
   }
   currentCardIndex = 0;
   updateCardView();
   updateListView();
 }
 
-btnSortAsc.addEventListener("click", () => { currentSortType = "asc"; applySorting(); });
-btnSortTime.addEventListener("click", () => { currentSortType = "time"; applySorting(); });
+if (btnSortAsc) btnSortAsc.addEventListener("click", () => { currentSortType = "asc"; applySorting(); });
+if (btnSortTime) btnSortTime.addEventListener("click", () => { currentSortType = "time"; applySorting(); });
 
 // ========================================================
 // 10. タブ切り替えロジック
@@ -530,70 +613,24 @@ const btnRegisterView = document.getElementById("btn-register-view");
 const registerView = document.getElementById("register-view");
 
 function hideAllViews() {
-  cardView.classList.add("hidden");
-  listView.classList.add("hidden");
-  registerView.classList.add("hidden");
-  btnCardView.classList.remove("active");
-  btnListView.classList.remove("active");
-  btnRegisterView.classList.remove("active");
+  if (cardView) cardView.classList.add("hidden");
+  if (listView) listView.classList.add("hidden");
+  if (registerView) registerView.classList.add("hidden");
+  if (btnCardView) btnCardView.classList.remove("active");
+  if (btnListView) btnListView.classList.remove("active");
+  if (btnRegisterView) btnRegisterView.classList.remove("active");
 }
-btnCardView.addEventListener("click", () => { hideAllViews(); btnCardView.classList.add("active"); cardView.classList.remove("hidden"); });
-btnListView.addEventListener("click", () => { hideAllViews(); btnListView.classList.add("active"); listView.classList.remove("hidden"); updateListView(); });
-btnRegisterView.addEventListener("click", () => { hideAllViews(); btnRegisterView.classList.add("active"); registerView.classList.remove("hidden"); });
+if (btnCardView) btnCardView.addEventListener("click", () => { hideAllViews(); btnCardView.classList.add("active"); cardView.classList.remove("hidden"); });
+if (btnListView) btnListView.addEventListener("click", () => { hideAllViews(); btnListView.classList.add("active"); listView.classList.remove("hidden"); updateListView(); });
+if (btnRegisterView) btnRegisterView.addEventListener("click", () => { hideAllViews(); btnRegisterView.classList.add("active"); registerView.classList.remove("hidden"); });
 
 // ========================================================
-// 11. 初期実行
-// ========================================================
-initLargeSelect();
-
-// ========================================================
-// 12. 同期（インポート/エクスポート）
-// ========================================================
-const btnExport = document.getElementById("btn-export");
-const btnImportTrigger = document.getElementById("btn-import-trigger");
-const fileImport = document.getElementById("file-import");
-
-btnExport.addEventListener("click", () => {
-  const dataStr = JSON.stringify(wordData, null, 2);
-  const blob = new Blob([dataStr], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "tango_data.json";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  alert("データを書き出しました！");
-});
-btnImportTrigger.addEventListener("click", () => { fileImport.click(); });
-fileImport.addEventListener("change", (event) => {
-  const file = event.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    try {
-      const importedData = JSON.parse(e.target.result);
-      if (confirm("データを上書き同期しますか？")) {
-        wordData = importedData;
-        saveToLocalStorage();
-        initLargeSelect();
-        initRegisterSelects();
-        resetCardViewStatus("小項目を選択してください");
-        alert("同期完了！");
-      }
-    } catch (err) { alert("エラー: " + err.message); }
-  };
-  reader.readAsText(file);
-  fileImport.value = "";
-});
-
-// ========================================================
-// 13. 文字装飾機能
+// 11. 文字装飾機能
 // ========================================================
 document.querySelectorAll(".decorations").forEach(bar => {
   const targetId = bar.getAttribute("data-target");
   const textarea = document.getElementById(targetId);
+  if (!textarea) return;
 
   const applyDecoration = (tagStart, tagEnd) => {
     const startPos = textarea.selectionStart;
@@ -611,13 +648,17 @@ document.querySelectorAll(".decorations").forEach(bar => {
     textarea.setSelectionRange(startPos, startPos + tagStart.length + selectedText.length + tagEnd.length);
   };
 
-  bar.querySelector(".btn-deco-bold").addEventListener("click", () => applyDecoration("<b>", "</b>"));
-  bar.querySelector(".btn-deco-red").addEventListener("click", () => applyDecoration("<span style='color:red;'>", "</span>"));
-  bar.querySelector(".btn-deco-blue").addEventListener("click", () => applyDecoration("<span style='color:blue;'>", "</span>"));
+  const btnBold = bar.querySelector(".btn-deco-bold");
+  const btnRed = bar.querySelector(".btn-deco-red");
+  const btnBlue = bar.querySelector(".btn-deco-blue");
+
+  if (btnBold) btnBold.addEventListener("click", () => applyDecoration("<b>", "</b>"));
+  if (btnRed) btnRed.addEventListener("click", () => applyDecoration("<span style='color:red;'>", "</span>"));
+  if (btnBlue) btnBlue.addEventListener("click", () => applyDecoration("<span style='color:blue;'>", "</span>"));
 });
 
 // ========================================================
-// 14. 単語の登録・修正・削除コアロジック
+// 12. 単語の登録・修正・削除コアロジック（圧縮連動版）
 // ========================================================
 const regLarge = document.getElementById("reg-large");
 const regMedium = document.getElementById("reg-medium");
@@ -634,28 +675,34 @@ const btnClearImage = document.getElementById("btn-clear-image");
 const btnRegister = document.getElementById("btn-register");
 const btnCancelEdit = document.getElementById("btn-cancel-edit");
 
-let base64ImageData = "";
+// ★ 修正：画像変更時に幅400pxの自動圧縮ロジックを強制適用 ★
+if (inputImage) {
+  inputImage.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
 
-inputImage.addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = function(event) {
-    base64ImageData = event.target.result;
-    imgPreview.src = base64ImageData;
-    imgPreviewContainer.classList.remove("hidden");
-  };
-  reader.readAsDataURL(file);
-});
+    try {
+      base64ImageData = await compressImage(file, 400);
+      if (imgPreview) imgPreview.src = base64ImageData;
+      if (imgPreviewContainer) imgPreviewContainer.classList.remove("hidden");
+    } catch (err) {
+      alert("画像の圧縮処理に失敗しました。");
+      console.error(err);
+    }
+  });
+}
 
-btnClearImage.addEventListener("click", () => {
-  base64ImageData = "";
-  inputImage.value = "";
-  imgPreviewContainer.classList.add("hidden");
-  imgPreview.src = "";
-});
+if (btnClearImage) {
+  btnClearImage.addEventListener("click", () => {
+    base64ImageData = "";
+    if (inputImage) inputImage.value = "";
+    if (imgPreviewContainer) imgPreviewContainer.classList.add("hidden");
+    if (imgPreview) imgPreview.src = "";
+  });
+}
 
 function initRegisterSelects() {
+  if (!regLarge) return;
   regLarge.innerHTML = '<option value="">-- 既存の大項目 --</option>';
   wordData.categories.forEach(cat => {
     const opt = document.createElement("option");
@@ -669,41 +716,45 @@ function initRegisterSelects() {
   regSmall.disabled = true;
 }
 
-regLarge.addEventListener("change", (e) => {
-  const largeId = e.target.value;
-  regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
-  regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
-  regSmall.disabled = true;
-  if (!largeId) { regMedium.disabled = true; return; }
-  const largeCat = wordData.categories.find(c => c.id === largeId);
-  if (largeCat && largeCat.subcategories) {
-    largeCat.subcategories.forEach(sub => {
-      const opt = document.createElement("option");
-      opt.value = sub.id;
-      opt.textContent = sub.name;
-      regMedium.appendChild(opt);
-    });
-    regMedium.disabled = false;
-  }
-});
+if (regLarge) {
+  regLarge.addEventListener("change", (e) => {
+    const largeId = e.target.value;
+    regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
+    regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
+    regSmall.disabled = true;
+    if (!largeId) { regMedium.disabled = true; return; }
+    const largeCat = wordData.categories.find(c => c.id === largeId);
+    if (largeCat && largeCat.subcategories) {
+      largeCat.subcategories.forEach(sub => {
+        const opt = document.createElement("option");
+        opt.value = sub.id;
+        opt.textContent = sub.name;
+        regMedium.appendChild(opt);
+      });
+      regMedium.disabled = false;
+    }
+  });
+}
 
-regMedium.addEventListener("change", (e) => {
-  const largeId = regLarge.value;
-  const mediumId = e.target.value;
-  regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
-  if (!mediumId) { regSmall.disabled = true; return; }
-  const largeCat = wordData.categories.find(c => c.id === largeId);
-  const mediumCat = largeCat.subcategories.find(s => s.id === mediumId);
-  if (mediumCat && mediumCat.sections) {
-    mediumCat.sections.forEach(sec => {
-      const opt = document.createElement("option");
-      opt.value = sec.id;
-      opt.textContent = sec.name;
-      regSmall.appendChild(opt);
-    });
-    regSmall.disabled = false;
-  }
-});
+if (regMedium) {
+  regMedium.addEventListener("change", (e) => {
+    const largeId = regLarge.value;
+    const mediumId = e.target.value;
+    regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
+    if (!mediumId) { regSmall.disabled = true; return; }
+    const largeCat = wordData.categories.find(c => c.id === largeId);
+    const mediumCat = largeCat.subcategories.find(s => s.id === mediumId);
+    if (mediumCat && mediumCat.sections) {
+      mediumCat.sections.forEach(sec => {
+        const opt = document.createElement("option");
+        opt.value = sec.id;
+        opt.textContent = sec.name;
+        regSmall.appendChild(opt);
+      });
+      regSmall.disabled = false;
+    }
+  });
+}
 
 window.startEditItem = function(itemId) {
   let foundItem = null;
@@ -730,37 +781,39 @@ window.startEditItem = function(itemId) {
     imgPreviewContainer.classList.add("hidden");
   }
 
-  document.getElementById("register-category-area").classList.add("hidden");
-  document.getElementById("register-hr").classList.add("hidden");
-  document.getElementById("edit-mode-notice").classList.remove("hidden");
-  btnCancelEdit.classList.remove("hidden");
+  document.getElementById("register-category-area")?.classList.add("hidden");
+  document.getElementById("register-hr")?.classList.add("hidden");
+  document.getElementById("edit-mode-notice")?.classList.remove("hidden");
+  btnCancelEdit?.classList.remove("hidden");
   document.getElementById("register-headline").textContent = "✏️ 登録済単語の修正";
   btnRegister.textContent = "修正を確定する";
   btnRegister.style.backgroundColor = "#ecc94b";
   btnRegister.style.color = "black";
 
-  btnRegisterView.click();
+  if (btnRegisterView) btnRegisterView.click();
 };
 
 function exitEditMode() {
   editingItemId = null;
-  inputWord.value = "";
-  inputMeaning.value = "";
+  if (inputWord) inputWord.value = "";
+  if (inputMeaning) inputMeaning.value = "";
   base64ImageData = "";
-  inputImage.value = "";
-  imgPreviewContainer.classList.add("hidden");
-  imgPreview.src = "";
+  if (inputImage) inputImage.value = "";
+  if (imgPreviewContainer) imgPreviewContainer.classList.add("hidden");
+  if (imgPreview) imgPreview.src = "";
 
-  document.getElementById("register-category-area").classList.remove("hidden");
-  document.getElementById("register-hr").classList.remove("hidden");
-  document.getElementById("edit-mode-notice").classList.add("hidden");
-  btnCancelEdit.classList.add("hidden");
-  document.getElementById("register-headline").textContent = "➕ 新しい単語・項目の登録";
-  btnRegister.textContent = "この内容で登録する";
-  btnRegister.style.backgroundColor = "#3182ce";
-  btnRegister.style.color = "white";
+  document.getElementById("register-category-area")?.classList.remove("hidden");
+  document.getElementById("register-hr")?.classList.remove("hidden");
+  document.getElementById("edit-mode-notice")?.classList.add("hidden");
+  btnCancelEdit?.classList.add("hidden");
+  document.getElementById("register-headline").textContent = "📝 新しい単語・項目の登録";
+  if (btnRegister) {
+    btnRegister.textContent = "この内容で登録する";
+    btnRegister.style.backgroundColor = "#3182ce";
+    btnRegister.style.color = "white";
+  }
 }
-btnCancelEdit.addEventListener("click", exitEditMode);
+if (btnCancelEdit) btnCancelEdit.addEventListener("click", exitEditMode);
 
 window.deleteItem = function(itemId) {
   if (!confirm("本当にこの単語を削除してもよろしいですか？")) return;
@@ -790,195 +843,226 @@ window.deleteItem = function(itemId) {
   alert("単語を削除しました。");
 };
 
-btnRegister.addEventListener("click", () => {
-  const wordVal = inputWord.value.trim();
-  const meaningVal = inputMeaning.value.trim();
+if (btnRegister) {
+  btnRegister.addEventListener("click", () => {
+    const wordVal = inputWord.value.trim();
+    const meaningVal = inputMeaning.value.trim();
 
-  if (!wordVal || (!meaningVal && !base64ImageData)) {
-    alert("単語と意味を入力してください。");
-    return;
-  }
+    if (!wordVal || (!meaningVal && !base64ImageData)) {
+      alert("単語と意味を入力してください。");
+      return;
+    }
 
-  if (editingItemId) {
-    let success = false;
-    wordData.categories.forEach(c => {
-      c.subcategories.forEach(s => {
-        s.sections.forEach(sec => {
-          const item = sec.items.find(i => i.id === editingItemId);
-          if (item) {
-            item.word = wordVal;
-            item.meaning = meaningVal;
-            item.image = base64ImageData;
-            success = true;
-          }
-        });
-      });
-    });
-
-    if (success) {
-      alert("単語を修正しました！");
-      saveToLocalStorage();
-
-      if (currentSmallId) {
-        let foundSec = null;
-        wordData.categories.forEach(c => {
-          c.subcategories.forEach(s => {
-            s.sections.forEach(sec => {
-              if (sec.id === currentSmallId) foundSec = sec;
-            });
+    if (editingItemId) {
+      let success = false;
+      wordData.categories.forEach(c => {
+        c.subcategories.forEach(s => {
+          s.sections.forEach(sec => {
+            const item = sec.items.find(i => i.id === editingItemId);
+            if (item) {
+              item.word = wordVal;
+              item.meaning = meaningVal;
+              item.image = base64ImageData;
+              success = true;
+            }
           });
         });
-        if (foundSec) currentItems = foundSec.items;
+      });
+
+      if (success) {
+        alert("単語を修正しました！");
+        saveToLocalStorage();
+
+        if (currentSmallId) {
+          let foundSec = null;
+          wordData.categories.forEach(c => {
+            c.subcategories.forEach(s => {
+              s.sections.forEach(sec => {
+                if (sec.id === currentSmallId) foundSec = sec;
+              });
+            });
+          });
+          if (foundSec) currentItems = foundSec.items;
+          applySorting();
+        }
+
+        exitEditMode();
+        if (btnListView) btnListView.click();
+      } else {
+        alert("エラー: 修正対象の単語が見つかりませんでした。");
+        exitEditMode();
+      }
+
+    } else {
+      let largeId = regLarge.value;
+      let largeName = newLarge.value.trim();
+      let mediumId = regMedium.value;
+      let mediumName = newMedium.value.trim();
+      let smallId = regSmall.value;
+      let smallName = newSmall.value.trim();
+
+      if (!largeId && !largeName) { alert("大項目を選択・入力してください。"); return; }
+      if (largeId && !mediumId && !mediumName) { alert("中項目を選択・入力してください。"); return; }
+      if ((largeId && mediumId) && !smallId && !smallName) { alert("小項目を選択・入力してください。"); return; }
+
+      let isNewLarge = !largeId;
+      let targetLarge = largeId ? wordData.categories.find(c => c.id === largeId) : { id: "large-" + Date.now(), name: largeName, subcategories: [] };
+      if (isNewLarge) {
+        wordData.categories.push(targetLarge);
+        largeId = targetLarge.id;
+      }
+
+      let isNewMedium = !mediumId;
+      let targetMedium = mediumId ? targetLarge.subcategories.find(s => s.id === mediumId) : { id: "medium-" + Date.now(), name: mediumName || "未分類の中項目", sections: [] };
+      if (isNewMedium) {
+        targetLarge.subcategories.push(targetMedium);
+        mediumId = targetMedium.id;
+      }
+
+      let isNewSmall = !smallId;
+      let targetSmall = smallId ? targetMedium.sections.find(sec => sec.id === smallId) : { id: "small-" + Date.now(), name: smallName || "未分類の小項目", items: [] };
+      if (isNewSmall) {
+        targetMedium.sections.push(targetSmall);
+        smallId = targetSmall.id;
+      }
+
+      const newItem = {
+        id: "item-" + Date.now(),
+        word: wordVal,
+        meaning: meaningVal,
+        image: base64ImageData,
+        memorized: false
+      };
+      targetSmall.items.push(newItem);
+      alert(`単語を登録しました！`);
+
+      inputWord.value = "";
+      inputMeaning.value = "";
+      base64ImageData = "";
+      inputImage.value = "";
+      imgPreviewContainer.classList.add("hidden");
+      imgPreview.src = "";
+      newLarge.value = "";
+      newMedium.value = "";
+      newSmall.value = "";
+
+      if (currentSmallId === targetSmall.id) {
+        currentItems = targetSmall.items;
         applySorting();
       }
 
-      exitEditMode();
-      btnListView.click();
-    } else {
-      alert("エラー: 修正対象の単語が見つかりませんでした。");
-      exitEditMode();
-    }
+      saveToLocalStorage();
+      initLargeSelect();
 
-  } else {
-    let largeId = regLarge.value;
-    let largeName = newLarge.value.trim();
-    let mediumId = regMedium.value;
-    let mediumName = newMedium.value.trim();
-    let smallId = regSmall.value;
-    let smallName = newSmall.value.trim();
+      regLarge.innerHTML = '<option value="">-- 既存の大項目 --</option>';
+      wordData.categories.forEach(cat => {
+        const opt = document.createElement("option");
+        opt.value = cat.id;
+        opt.textContent = cat.name;
+        regLarge.appendChild(opt);
+      });
+      regLarge.value = largeId;
 
-    if (!largeId && !largeName) { alert("大項目を選択・入力してください。"); return; }
-    if (largeId && !mediumId && !mediumName) { alert("中項目を選択・入力してください。"); return; }
-    if ((largeId && mediumId) && !smallId && !smallName) { alert("小項目を選択・入力してください。"); return; }
-
-    let isNewLarge = !largeId;
-    let targetLarge = largeId ? wordData.categories.find(c => c.id === largeId) : { id: "large-" + Date.now(), name: largeName, subcategories: [] };
-    if (isNewLarge) {
-      wordData.categories.push(targetLarge);
-      largeId = targetLarge.id;
-    }
-
-    let isNewMedium = !mediumId;
-    let targetMedium = mediumId ? targetLarge.subcategories.find(s => s.id === mediumId) : { id: "medium-" + Date.now(), name: mediumName || "未分類の中項目", sections: [] };
-    if (isNewMedium) {
-      targetLarge.subcategories.push(targetMedium);
-      mediumId = targetMedium.id;
-    }
-
-    let isNewSmall = !smallId;
-    let targetSmall = smallId ? targetMedium.sections.find(sec => sec.id === smallId) : { id: "small-" + Date.now(), name: smallName || "未分類の小項目", items: [] };
-    if (isNewSmall) {
-      targetMedium.sections.push(targetSmall);
-      smallId = targetSmall.id;
-    }
-
-    const newItem = {
-      id: "item-" + Date.now(),
-      word: wordVal,
-      meaning: meaningVal,
-      image: base64ImageData,
-      memorized: false
-    };
-    targetSmall.items.push(newItem);
-    alert(`単語を登録しました！`);
-
-    inputWord.value = "";
-    inputMeaning.value = "";
-    base64ImageData = "";
-    inputImage.value = "";
-    imgPreviewContainer.classList.add("hidden");
-    imgPreview.src = "";
-    newLarge.value = "";
-    newMedium.value = "";
-    newSmall.value = "";
-
-    if (currentSmallId === targetSmall.id) {
-      currentItems = targetSmall.items;
-      applySorting();
-    }
-
-    saveToLocalStorage();
-    initLargeSelect();
-
-    regLarge.innerHTML = '<option value="">-- 既存の大項目 --</option>';
-    wordData.categories.forEach(cat => {
-      const opt = document.createElement("option");
-      opt.value = cat.id;
-      opt.textContent = cat.name;
-      regLarge.appendChild(opt);
-    });
-    regLarge.value = largeId;
-
-    regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
-    if (largeId) {
-      const activeLarge = wordData.categories.find(c => c.id === largeId);
-      if (activeLarge && activeLarge.subcategories) {
-        activeLarge.subcategories.forEach(sub => {
-          const opt = document.createElement("option");
-          opt.value = sub.id;
-          opt.textContent = sub.name;
-          regMedium.appendChild(opt);
-        });
-        regMedium.disabled = false;
-        regMedium.value = mediumId;
+      regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
+      if (largeId) {
+        const activeLarge = wordData.categories.find(c => c.id === largeId);
+        if (activeLarge && activeLarge.subcategories) {
+          activeLarge.subcategories.forEach(sub => {
+            const opt = document.createElement("option");
+            opt.value = sub.id;
+            opt.textContent = sub.name;
+            regMedium.appendChild(opt);
+          });
+          regMedium.disabled = false;
+          regMedium.value = mediumId;
+        }
+      } else {
+        regMedium.disabled = true;
       }
-    } else {
-      regMedium.disabled = true;
-    }
 
-    regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
-    if (largeId && mediumId) {
-      const activeLarge = wordData.categories.find(c => c.id === largeId);
-      const activeMedium = activeLarge.subcategories.find(s => s.id === mediumId);
-      if (activeMedium && activeMedium.sections) {
-        activeMedium.sections.forEach(sec => {
-          const opt = document.createElement("option");
-          opt.value = sec.id;
-          opt.textContent = sec.name;
-          regSmall.appendChild(opt);
-        });
-        regSmall.disabled = false;
-        regSmall.value = smallId;
+      regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
+      if (largeId && mediumId) {
+        const activeLarge = wordData.categories.find(c => c.id === largeId);
+        const activeMedium = activeLarge.subcategories.find(s => s.id === mediumId);
+        if (activeMedium && activeMedium.sections) {
+          activeMedium.sections.forEach(sec => {
+            const opt = document.createElement("option");
+            opt.value = sec.id;
+            opt.textContent = sec.name;
+            regSmall.appendChild(opt);
+          });
+          regSmall.disabled = false;
+          regSmall.value = smallId;
+        }
+      } else {
+        regSmall.disabled = true;
       }
-    } else {
-      regSmall.disabled = true;
     }
-  }
-});
+  });
+}
 
 initRegisterSelects();
 exitEditMode();
 
 // ========================================================
-// 15. 画像の表示・エスケープ装飾タグ復元の上書き補正
+// 13. 同期機能（安定化エクスポート・インポート）
 // ========================================================
-function hideCardImage() {
-  cardImageContainer.classList.add("hidden");
-  cardImageContainer.style.display = "none";
-  cardImg.removeAttribute('src');
-  // 画像がないので画像拡大ボタンを非表示にする
-  if (btnZoomImage) btnZoomImage.classList.add("hidden");
+const btnExportEl = document.getElementById("btn-export");
+const btnImportTriggerEl = document.getElementById("btn-import-trigger");
+const fileImportEl = document.getElementById("file-import");
+
+if (btnImportTriggerEl && fileImportEl) {
+  btnImportTriggerEl.addEventListener("click", () => {
+    fileImportEl.click();
+  });
 }
 
-function showCardImage(base64Data) {
-  if (!base64Data) { hideCardImage(); return; }
-  cardImg.src = base64Data;
-  cardImageContainer.classList.remove("hidden");
-  cardImageContainer.style.display = "block";
-  // 画像が存在するので画像拡大ボタンを表示する
-  if (btnZoomImage) btnZoomImage.classList.remove("hidden");
+if (btnExportEl) {
+  btnExportEl.addEventListener("click", async () => {
+    try {
+      const jsonString = JSON.stringify(wordData, null, 2);
+      const fileName = `tango_data_${new Date().toISOString().slice(0, 10)}.json`;
+      const blob = new Blob([jsonString], { type: "application/json" });
+
+      // iOS Safari等の直接ダウンロード用フォールバック
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err) {
+      console.error(err);
+      alert("書き出しに失敗しました。");
+    }
+  });
 }
 
-safeHTML = function(str) {
-  if (!str) return "";
-  let escaped = str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-  escaped = escaped.replace(/&lt;b&gt;/gi, "<b>").replace(/&lt;\/b&gt;/gi, "</b>");
-  escaped = escaped.replace(/&lt;span style=&#039;color:red;&#039;&gt;/gi, '<span style="color:red;">');
-  escaped = escaped.replace(/&lt;\/span&gt;/gi, "</span>");
-  return escaped;
-};
+if (fileImportEl) {
+  fileImportEl.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const importedData = JSON.parse(event.target.result);
+
+        if (importedData && Array.isArray(importedData.categories)) {
+          if (confirm("データを上書き同期しますか？")) {
+            wordData = importedData;
+            await saveToLocalStorage();
+            alert("同期完了！");
+            location.reload();
+          }
+        } else {
+          alert("無効なデータ形式です。単語帳のJSONファイルを選択してください。");
+        }
+      } catch (err) {
+        alert("エラー: " + err.message);
+      }
+      fileImportEl.value = "";
+    };
+    reader.readAsText(file);
+  });
+}
