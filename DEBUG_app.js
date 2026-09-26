@@ -1,4 +1,77 @@
 // ========================================================
+// 0. テキスト出力用デバッグログモジュール
+// ========================================================
+(function initDebugLogger() {
+  function createDebugUI() {
+    if (document.getElementById("debug-log-panel")) return;
+
+    const panel = document.createElement("div");
+    panel.id = "debug-log-panel";
+    panel.style.cssText = `
+      margin: 20px 0;
+      padding: 15px;
+      background-color: #1a202c;
+      color: #cbd5e0;
+      border-radius: 8px;
+      font-family: monospace;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+    `;
+
+    panel.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <strong style="color: #63b3ed; font-size: 1rem;">🔍 処理結果ログ (テキスト出力)</strong>
+        <div>
+          <button id="btn-clear-debug-log" style="background: #4a5568; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; margin-right: 5px;">クリア</button>
+          <button id="btn-copy-debug-log" style="background: #3182ce; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer;">コピー</button>
+        </div>
+      </div>
+      <textarea id="debug-log-output" readonly style="width: 100%; height: 200px; background: #2d3748; color: #68d391; border: 1px solid #4a5568; border-radius: 4px; padding: 8px; font-size: 0.85rem; box-sizing: border-box; resize: vertical;"></textarea>
+    `;
+
+    document.body.appendChild(panel);
+
+    document.getElementById("btn-clear-debug-log").addEventListener("click", () => {
+      const textarea = document.getElementById("debug-log-output");
+      if (textarea) textarea.value = "";
+    });
+
+    document.getElementById("btn-copy-debug-log").addEventListener("click", () => {
+      const textarea = document.getElementById("debug-log-output");
+      if (textarea) {
+        textarea.select();
+        navigator.clipboard.writeText(textarea.value);
+        alert("ログをクリップボードにコピーしました。");
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", createDebugUI);
+  } else {
+    createDebugUI();
+  }
+})();
+
+function appendDebugLog(tag, message, detailObj = null) {
+  const textarea = document.getElementById("debug-log-output");
+  const timestamp = new Date().toLocaleTimeString();
+  let logLine = `[${timestamp}] [${tag}] ${message}`;
+
+  if (detailObj !== null) {
+    try {
+      logLine += `\n  └ Detail: ${JSON.stringify(detailObj)}`;
+    } catch (e) {
+      logLine += `\n  └ Detail: [Unserializable Object]`;
+    }
+  }
+
+  if (textarea) {
+    textarea.value += logLine + "\n";
+    textarea.scrollTop = textarea.scrollHeight;
+  }
+}
+
+// ========================================================
 // 1. データ構造と初期ダミーデータ
 // ========================================================
 let wordData = {
@@ -27,11 +100,33 @@ let wordData = {
   ]
 };
 
+function normalizeWordData(inputData) {
+  let normalized = { version: "2.0", categories: [] };
+
+  if (Array.isArray(inputData)) {
+    normalized.categories = inputData;
+  } else if (inputData && typeof inputData === "object") {
+    if (Array.isArray(inputData.categories)) {
+      normalized = inputData;
+    } else if (inputData.data && Array.isArray(inputData.data)) {
+      normalized.categories = inputData.data;
+    } else {
+      normalized.categories = [];
+    }
+  }
+
+  if (!Array.isArray(normalized.categories)) {
+    normalized.categories = [];
+  }
+
+  return normalized;
+}
+
 // ========================================================
-// 2. IndexedDB 制御モジュール
+// 2. IndexedDB 制御モジュール (バージョンを 2 に修正)
 // ========================================================
 const DB_NAME = "TangoCardDB";
-const DB_VERSION = 2; // バージョンを上げて onupgradeneeded を確実に実行させます
+const DB_VERSION = 2; // ★エラー回避のためバージョンを 2 に統一
 const STORE_NAME = "app_data";
 
 function openDB() {
@@ -49,86 +144,80 @@ function openDB() {
 }
 
 async function loadDataFromDB() {
-  try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        resolve(null);
-        return;
-      }
-      const tx = db.transaction(STORE_NAME, "readonly");
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.get("wordData");
-      request.onsuccess = () => resolve(request.result || null);
-      request.onerror = () => reject(request.error);
-    });
-  } catch (err) {
-    console.error("IndexedDBからの読み込みエラー:", err);
-    return null;
-  }
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const store = tx.objectStore(STORE_NAME);
+    const request = store.get("wordData");
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
 }
 
-// 既存コードとの互換性を保つための IndexedDB 保存関数
 async function saveToLocalStorage() {
   try {
     const db = await openDB();
     return new Promise((resolve, reject) => {
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        reject(new Error(`ObjectStore '${STORE_NAME}' が見つかりません。`));
-        return;
-      }
       const tx = db.transaction(STORE_NAME, "readwrite");
       const store = tx.objectStore(STORE_NAME);
       store.put(wordData, "wordData");
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => reject(tx.error);
+      tx.oncomplete = () => {
+        appendDebugLog("DB-SAVE", "IndexedDBへのデータ保存が成功しました。");
+        resolve(true);
+      };
+      tx.onerror = () => {
+        appendDebugLog("DB-SAVE-ERROR", "IndexedDB保存エラー:", tx.error);
+        reject(tx.error);
+      };
     });
   } catch (err) {
-    console.error("IndexedDBへの保存に失敗しました:", err);
-    // フォールバックとして localStorage にも保持
-    try {
-      localStorage.setItem("wordData", JSON.stringify(wordData));
-    } catch (e) {
-      console.error("localStorageへの保存も失敗しました:", e);
-    }
+    appendDebugLog("DB-SAVE-EXCEPT", "IndexedDB保存中に例外が発生しました:", err.message);
   }
 }
 
 async function initAppData() {
   try {
     const dbData = await loadDataFromDB();
-    if (dbData && Array.isArray(dbData.categories)) {
-      wordData = dbData;
+    if (dbData) {
+      wordData = normalizeWordData(dbData);
+      appendDebugLog("INIT", "IndexedDBから既存データをロードしました。", { categoriesCount: wordData.categories.length });
     } else {
       const localData = localStorage.getItem("wordData");
       if (localData) {
-        try {
-          const parsed = JSON.parse(localData);
-          if (parsed && Array.isArray(parsed.categories)) {
-            wordData = parsed;
-          }
-        } catch (e) {
-          console.error("LocalStorageの解析に失敗:", e);
-        }
+        wordData = normalizeWordData(JSON.parse(localData));
+        appendDebugLog("INIT", "localStorageからデータをロードし、IndexedDBへ移行します。");
+        await saveToLocalStorage();
+      } else {
+        appendDebugLog("INIT", "初期ダミーデータをセットし、IndexedDBへ初回保存します。");
+        await saveToLocalStorage();
       }
-      await saveToLocalStorage();
     }
 
-    // データ読み込み完了後に各プルダウンを初期化
-    if (typeof initLargeSelect === "function") initLargeSelect();
-    if (typeof initRegisterSelects === "function") initRegisterSelects();
+    refreshAllDropdowns();
+
   } catch (err) {
-    console.error("データ初期化失敗:", err);
+    appendDebugLog("INIT-ERROR", "データ初期化中にエラーが発生しました:", err.message);
   }
 }
 
-initAppData();
+function refreshAllDropdowns() {
+  if (typeof initLargeSelect === "function") initLargeSelect();
+  if (typeof initRegisterSelects === "function") initRegisterSelects();
+  appendDebugLog("UI-REFRESH", "プルダウンの再描画を完了しました。", { categoriesCount: wordData.categories.length });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initAppData);
+} else {
+  initAppData();
+}
 
 // ========================================================
-// 3. 画像の自動圧縮ロジック（縦横比維持・最大幅 400px）
+// 3. 画像の自動圧縮ロジック
 // ========================================================
 function compressImage(file, maxWidth = 400) {
   return new Promise((resolve, reject) => {
+    appendDebugLog("IMAGE-COMPRESS", `画像圧縮処理を開始します: ${file.name} (サイズ: ${file.size} bytes)`);
     const reader = new FileReader();
     reader.readAsDataURL(file);
     reader.onload = (event) => {
@@ -155,6 +244,7 @@ function compressImage(file, maxWidth = 400) {
         ctx.drawImage(img, 0, 0, width, height);
 
         const compressedBase64 = canvas.toDataURL("image/jpeg", 0.85);
+        appendDebugLog("IMAGE-COMPRESS", `画像圧縮完了: ${img.width}x${img.height} -> ${width}x${height} (Base64長: ${compressedBase64.length})`);
         resolve(compressedBase64);
       };
       img.onerror = (err) => reject(err);
@@ -163,7 +253,6 @@ function compressImage(file, maxWidth = 400) {
   });
 }
 
-// HTML特殊文字のエスケープ処理
 function safeHTML(str) {
   if (!str) return "";
   let escaped = str
@@ -186,10 +275,9 @@ let currentItems = [];
 let currentCardIndex = 0;
 let isShowingAnswer = false;
 let currentSmallId = "";
-let currentSortType = "time";
 let currentFontSize = 100;
 let editingItemId = null;
-let base64ImageData = ""; // 画像データの保持用変数
+let base64ImageData = "";
 
 const selectLarge = document.getElementById("select-large");
 const selectMedium = document.getElementById("select-medium");
@@ -218,7 +306,7 @@ const fontSizeDisplay = document.getElementById("font-size-display");
 
 function applyFontSize() {
   document.body.style.fontSize = currentFontSize + "%";
-  fontSizeDisplay.textContent = currentFontSize + "%";
+  if (fontSizeDisplay) fontSizeDisplay.textContent = currentFontSize + "%";
   localStorage.setItem("app_font_size", currentFontSize);
 }
 if (localStorage.getItem("app_font_size")) {
@@ -242,36 +330,50 @@ if (btnFontIncrease) {
 function initLargeSelect() {
   if (!selectLarge) return;
   selectLarge.innerHTML = '<option value="">大項目を選択</option>';
-  wordData.categories.forEach(cat => {
-    const opt = document.createElement("option");
-    opt.value = cat.id;
-    opt.textContent = cat.name;
-    selectLarge.appendChild(opt);
-  });
-  selectMedium.innerHTML = '<option value="">中項目を選択</option>';
-  selectMedium.disabled = true;
-  selectSmall.innerHTML = '<option value="">小項目を選択</option>';
-  selectSmall.disabled = true;
+
+  if (wordData && Array.isArray(wordData.categories)) {
+    wordData.categories.forEach(cat => {
+      const opt = document.createElement("option");
+      opt.value = cat.id;
+      opt.textContent = cat.name;
+      selectLarge.appendChild(opt);
+    });
+  }
+
+  if (selectMedium) {
+    selectMedium.innerHTML = '<option value="">中項目を選択</option>';
+    selectMedium.disabled = true;
+  }
+  if (selectSmall) {
+    selectSmall.innerHTML = '<option value="">小項目を選択</option>';
+    selectSmall.disabled = true;
+  }
 }
 
 if (selectLarge) {
   selectLarge.addEventListener("change", (e) => {
     const largeId = e.target.value;
-    selectMedium.innerHTML = '<option value="">中項目を選択</option>';
-    selectSmall.innerHTML = '<option value="">小項目を選択</option>';
-    selectSmall.disabled = true;
+    if (selectMedium) selectMedium.innerHTML = '<option value="">中項目を選択</option>';
+    if (selectSmall) {
+      selectSmall.innerHTML = '<option value="">小項目を選択</option>';
+      selectSmall.disabled = true;
+    }
 
-    if (!largeId) { selectMedium.disabled = true; resetCardViewStatus("大項目を選択してください"); return; }
+    if (!largeId) {
+      if (selectMedium) selectMedium.disabled = true;
+      resetCardViewStatus("大項目を選択してください");
+      return;
+    }
 
     const largeCat = wordData.categories.find(c => c.id === largeId);
-    if (largeCat && largeCat.subcategories) {
+    if (largeCat && Array.isArray(largeCat.subcategories)) {
       largeCat.subcategories.forEach(sub => {
         const opt = document.createElement("option");
         opt.value = sub.id;
         opt.textContent = sub.name;
-        selectMedium.appendChild(opt);
+        if (selectMedium) selectMedium.appendChild(opt);
       });
-      selectMedium.disabled = false;
+      if (selectMedium) selectMedium.disabled = false;
     }
     resetCardViewStatus("中項目を選択してください");
   });
@@ -279,22 +381,26 @@ if (selectLarge) {
 
 if (selectMedium) {
   selectMedium.addEventListener("change", (e) => {
-    const largeId = selectLarge.value;
+    const largeId = selectLarge ? selectLarge.value : "";
     const mediumId = e.target.value;
-    selectSmall.innerHTML = '<option value="">小項目を選択</option>';
+    if (selectSmall) selectSmall.innerHTML = '<option value="">小項目を選択</option>';
 
-    if (!mediumId) { selectSmall.disabled = true; resetCardViewStatus("中項目を選択してください"); return; }
+    if (!mediumId) {
+      if (selectSmall) selectSmall.disabled = true;
+      resetCardViewStatus("中項目を選択してください");
+      return;
+    }
 
     const largeCat = wordData.categories.find(c => c.id === largeId);
-    const mediumCat = largeCat.subcategories.find(s => s.id === mediumId);
-    if (mediumCat && mediumCat.sections) {
+    const mediumCat = largeCat && Array.isArray(largeCat.subcategories) ? largeCat.subcategories.find(s => s.id === mediumId) : null;
+    if (mediumCat && Array.isArray(mediumCat.sections)) {
       mediumCat.sections.forEach(sec => {
         const opt = document.createElement("option");
         opt.value = sec.id;
         opt.textContent = sec.name;
-        selectSmall.appendChild(opt);
+        if (selectSmall) selectSmall.appendChild(opt);
       });
-      selectSmall.disabled = false;
+      if (selectSmall) selectSmall.disabled = false;
     }
     resetCardViewStatus("小項目を選択してください");
   });
@@ -303,35 +409,24 @@ if (selectMedium) {
 if (selectSmall) {
   selectSmall.addEventListener("change", (e) => {
     currentSmallId = e.target.value;
-    if (!currentSmallId) {
-      resetCardViewStatus("小項目を選択してください");
-      currentItems = [];
-      if (typeof updateListView === "function") updateListView();
-      return;
-    }
+    if (!currentSmallId) { resetCardViewStatus("小項目を選択してください"); currentItems = []; return; }
 
-    const largeCat = wordData.categories.find(c => String(c.id) === String(selectLarge.value));
-    const mediumCat = largeCat?.subcategories?.find(s => String(s.id) === String(selectMedium.value));
-    const section = mediumCat?.sections?.find(sec => String(sec.id) === String(currentSmallId));
+    const largeCat = wordData.categories.find(c => c.id === (selectLarge ? selectLarge.value : ""));
+    const mediumCat = largeCat && Array.isArray(largeCat.subcategories) ? largeCat.subcategories.find(s => s.id === (selectMedium ? selectMedium.value : "")) : null;
+    const section = mediumCat && Array.isArray(mediumCat.sections) ? mediumCat.sections.find(sec => sec.id === currentSmallId) : null;
 
     if (section) {
-      // items 配列が存在しない場合は空配列で初期化
-      if (!Array.isArray(section.items)) {
-        section.items = [];
-      }
-
-      // JSON内の元の並び順をそのまま保持して反映（自動ソートを実行しない）
-      currentItems = section.items;
+      // ★JSON内の配列順をそのまま保持して反映（自動ソートを適用しない）
+      currentItems = [...(section.items || [])];
+      appendDebugLog("SELECT-SMALL", `小項目を選択しました。対象件数: ${currentItems.length}件`, { sectionId: currentSmallId, sectionName: section.name });
 
       // ソートボタンの強調スタイルを解除
-      const btnSortAsc = document.getElementById("btn-sort-asc");
-      const btnSortTime = document.getElementById("btn-sort-time");
       if (btnSortAsc) { btnSortAsc.style.background = "#edf2f7"; btnSortAsc.style.color = "black"; }
       if (btnSortTime) { btnSortTime.style.background = "#edf2f7"; btnSortTime.style.color = "black"; }
 
       currentCardIndex = 0;
-      if (typeof updateCardView === "function") updateCardView();
-      if (typeof updateListView === "function") updateListView();
+      updateCardView();
+      updateListView();
     }
   });
 }
@@ -339,10 +434,10 @@ if (selectSmall) {
 function resetCardViewStatus(message) {
   if (!cardText) return;
   cardText.innerHTML = message;
-  btnPrev.disabled = true;
-  btnToggleAnswer.disabled = true;
-  btnNext.disabled = true;
-  btnMemorized.disabled = true;
+  if (btnPrev) btnPrev.disabled = true;
+  if (btnToggleAnswer) btnToggleAnswer.disabled = true;
+  if (btnNext) btnNext.disabled = true;
+  if (btnMemorized) btnMemorized.disabled = true;
   hideCardImage();
 }
 
@@ -357,23 +452,27 @@ function updateCardView() {
 
   const item = currentItems[currentCardIndex];
   isShowingAnswer = false;
-  btnToggleAnswer.textContent = "意味を見る";
-  cardText.innerHTML = safeHTML(item.word);
-  wordCard.style.backgroundColor = "";
+  if (btnToggleAnswer) btnToggleAnswer.textContent = "意味を見る";
+  if (cardText) cardText.innerHTML = safeHTML(item.word);
+  if (wordCard) wordCard.style.backgroundColor = "";
 
-  btnPrev.disabled = currentCardIndex === 0;
-  btnNext.disabled = currentCardIndex === currentItems.length - 1;
-  btnToggleAnswer.disabled = false;
-  btnMemorized.disabled = false;
+  if (btnPrev) btnPrev.disabled = currentCardIndex === 0;
+  if (btnNext) btnNext.disabled = currentCardIndex === currentItems.length - 1;
+  if (btnToggleAnswer) btnToggleAnswer.disabled = false;
+  if (btnMemorized) btnMemorized.disabled = false;
 
   if (item.memorized) {
-    btnMemorized.textContent = "覚えたマーク解除";
-    btnMemorized.style.backgroundColor = "#e53e3e";
-    wordCard.style.borderLeft = "10px solid #48bb78";
+    if (btnMemorized) {
+      btnMemorized.textContent = "覚えたマーク解除";
+      btnMemorized.style.backgroundColor = "#e53e3e";
+    }
+    if (wordCard) wordCard.style.borderLeft = "10px solid #48bb78";
   } else {
-    btnMemorized.textContent = "覚えた！";
-    btnMemorized.style.backgroundColor = "#48bb78";
-    wordCard.style.borderLeft = "10px solid #cbd5e0";
+    if (btnMemorized) {
+      btnMemorized.textContent = "覚えた！";
+      btnMemorized.style.backgroundColor = "#48bb78";
+    }
+    if (wordCard) wordCard.style.borderLeft = "10px solid #cbd5e0";
   }
   hideCardImage();
 }
@@ -385,14 +484,14 @@ if (btnToggleAnswer) {
     isShowingAnswer = !isShowingAnswer;
 
     if (isShowingAnswer) {
-      cardText.innerHTML = safeHTML(item.meaning);
+      if (cardText) cardText.innerHTML = safeHTML(item.meaning);
       btnToggleAnswer.textContent = "単語を見る";
-      wordCard.style.backgroundColor = "#FFFAF0";
+      if (wordCard) wordCard.style.backgroundColor = "#FFFAF0";
       showCardImage(item.image);
     } else {
-      cardText.innerHTML = safeHTML(item.word);
+      if (cardText) cardText.innerHTML = safeHTML(item.word);
       btnToggleAnswer.textContent = "意味を見る";
-      wordCard.style.backgroundColor = "";
+      if (wordCard) wordCard.style.backgroundColor = "";
       hideCardImage();
     }
   });
@@ -421,6 +520,7 @@ if (btnMemorized) {
     if (currentItems.length === 0) return;
     const item = currentItems[currentCardIndex];
     item.memorized = !item.memorized;
+    appendDebugLog("CARD-MEMORIZED", `覚えたフラグを変更しました (ID: ${item.id}, Status: ${item.memorized})`);
     saveToLocalStorage();
     updateCardView();
   });
@@ -428,11 +528,11 @@ if (btnMemorized) {
 
 if (wordCard) {
   wordCard.addEventListener("click", (e) => {
-    if (currentItems.length === 0 || btnToggleAnswer.disabled) return;
+    if (currentItems.length === 0 || (btnToggleAnswer && btnToggleAnswer.disabled)) return;
     if (e.target.id === 'card-img' || (cardImageContainer && cardImageContainer.contains(e.target))) {
       return;
     }
-    btnToggleAnswer.click();
+    if (btnToggleAnswer) btnToggleAnswer.click();
   });
 }
 
@@ -452,7 +552,6 @@ function showCardImage(b64Data) {
   if (btnZoomImage) btnZoomImage.classList.remove("hidden");
 }
 
-// モーダル表示機能
 function openImageModal(imgSrc) {
   if (!imgSrc || imgSrc === window.location.href || imgSrc.endsWith('/')) return;
 
@@ -508,14 +607,14 @@ if (cardImg) {
 }
 
 // ========================================================
-// 8. 単語一覧描画＆ドラッグ移動（並び替え機能付き）
+// 8. 単語一覧描画＆ドラッグ移動
 // ========================================================
 function updateListView() {
   const tbody = document.getElementById("word-list-tbody");
   if (!tbody) return;
   tbody.innerHTML = "";
 
-  if (!currentItems || currentItems.length === 0) {
+  if (currentItems.length === 0) {
     tbody.innerHTML = `<tr><td colspan="4" style="text-align:center; color:#a0aec0; padding:20px;">この項目に登録された単語はありません。</td></tr>`;
     return;
   }
@@ -526,10 +625,10 @@ function updateListView() {
     const tr = document.createElement("tr");
     tr.draggable = true;
     tr.dataset.index = index;
+    tr.dataset.id = item.id;
 
     const tdDrag = document.createElement("td");
     tdDrag.className = "drag-handle";
-    tdDrag.style.cursor = "grab";
     tdDrag.innerHTML = "≡";
     tr.appendChild(tdDrag);
 
@@ -557,7 +656,6 @@ function updateListView() {
     `;
     tr.appendChild(tdAction);
 
-    // --- ドラッグ＆ドロップ イベント設定 ---
     tr.addEventListener("dragstart", (e) => {
       tr.classList.add("dragging");
       e.dataTransfer.effectAllowed = "move";
@@ -567,16 +665,13 @@ function updateListView() {
     tr.addEventListener("dragend", () => {
       tr.classList.remove("dragging");
       const rows = tbody.querySelectorAll("tr");
-      rows.forEach(r => {
-        r.style.borderTop = "";
-        r.style.borderBottom = "";
-      });
+      rows.forEach(r => r.style.borderTop = "");
+      rows.forEach(r => r.style.borderBottom = "");
     });
 
     tr.addEventListener("dragover", (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
-
       const bounding = tr.getBoundingClientRect();
       const offset = e.clientY - bounding.top;
       if (offset > bounding.height / 2) {
@@ -593,81 +688,53 @@ function updateListView() {
       tr.style.borderBottom = "";
     });
 
-    tr.addEventListener("drop", async (e) => {
+    tr.addEventListener("drop", (e) => {
       e.preventDefault();
       tr.style.borderTop = "";
       tr.style.borderBottom = "";
 
       const fromIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
-      let toIndex = index;
+      const toIndex = index;
+      if (fromIndex === toIndex) return;
 
-      if (isNaN(fromIndex)) return;
+      appendDebugLog("DRAG-DROP", `並び替えが発生しました: Index ${fromIndex} -> Index ${toIndex}`);
 
-      const bounding = tr.getBoundingClientRect();
-      const offset = e.clientY - bounding.top;
-      if (offset > bounding.height / 2) {
-        toIndex = index + 1;
-      }
+      const targetItem = currentItems.splice(fromIndex, 1)[0];
+      currentItems.splice(toIndex, 0, targetItem);
 
-      if (fromIndex === toIndex || fromIndex === toIndex - 1) return;
-
-      // 配列の並び替え
-      const movedItem = currentItems[fromIndex];
-      currentItems.splice(fromIndex, 1);
-      const targetIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
-      currentItems.splice(targetIndex, 0, movedItem);
-
-      // 元データ（wordData）に即時強制反映し保存
       syncWordDataOrder();
-      await saveToLocalStorage();
-
-      // View更新
-      currentCardIndex = 0;
+      saveToLocalStorage();
       updateListView();
-      if (typeof updateCardView === "function") updateCardView();
     });
 
     tbody.appendChild(tr);
   });
 }
 
-// 安全修正版：syncWordDataOrder
 function syncWordDataOrder() {
-  if (!wordData || !Array.isArray(wordData.categories) || !currentItems || currentItems.length === 0) {
-    console.warn("【同期スキップ】データが存在しないか、単語が0件です。");
-    return;
-  }
-
-  // 現在選択中の小項目IDを取得
-  const targetSmallId = (typeof selectSmall !== "undefined" && selectSmall && selectSmall.value)
-                          ? selectSmall.value
-                          : currentSmallId;
-
-  if (!targetSmallId) {
-    console.warn("【同期スキップ】対象の小項目IDが不明です。");
-    return;
-  }
-
-  for (const c of wordData.categories) {
-    if (!Array.isArray(c.subcategories)) continue;
-    for (const s of c.subcategories) {
-      if (!Array.isArray(s.sections)) continue;
-      for (const sec of s.sections) {
-
-        // IDの完全一致判定
-        if (String(sec.id).trim() === String(targetSmallId).trim()) {
-
-          // 参照を切った新しい配列として items を安全に置換（元の参照を破壊しません）
-          sec.items = currentItems.map(item => ({ ...item }));
-
-          console.log("✅ 【同期成功】画面の並び順をJSON用の元データに反映しました。");
-          return;
-        }
+  if (!currentSmallId) return;
+  let matched = false;
+  if (wordData && Array.isArray(wordData.categories)) {
+    wordData.categories.forEach(c => {
+      if (Array.isArray(c.subcategories)) {
+        c.subcategories.forEach(s => {
+          if (Array.isArray(s.sections)) {
+            s.sections.forEach(sec => {
+              if (sec.id === currentSmallId) {
+                sec.items = [...currentItems];
+                matched = true;
+              }
+            });
+          }
+        });
       }
-    }
+    });
   }
 
-  console.error("❌ 【同期失敗】元データの中に小項目ID: " + targetSmallId + " が見つかりませんでした。");
+  if (matched) {
+    const itemIds = currentItems.map(i => i.id);
+    appendDebugLog("SYNC-ORDER", `元データ(wordData)の並び順を同期しました。`, { itemOrder: itemIds });
+  }
 }
 
 // ========================================================
@@ -676,36 +743,29 @@ function syncWordDataOrder() {
 const btnSortAsc = document.getElementById("btn-sort-asc");
 const btnSortTime = document.getElementById("btn-sort-time");
 
-// 修正版：applySorting
-async function applySorting() {
-  if (!currentItems || currentItems.length === 0) return;
-
-  if (currentSortType === "asc") {
+function applySorting(type) {
+  if (type === "asc") {
     currentItems.sort((a, b) => {
-      const wA = (a.word || "").replace(/<[^>]*>/g, "").toLowerCase();
-      const wB = (b.word || "").replace(/<[^>]*>/g, "").toLowerCase();
+      const wA = a.word.replace(/<[^>]*>/g, "").toLowerCase();
+      const wB = b.word.replace(/<[^>]*>/g, "").toLowerCase();
       return wA.localeCompare(wB, 'ja');
     });
     if (btnSortAsc) { btnSortAsc.style.background = "#3182ce"; btnSortAsc.style.color = "white"; }
     if (btnSortTime) { btnSortTime.style.background = "#edf2f7"; btnSortTime.style.color = "black"; }
-  } else if (currentSortType === "time") {
-    currentItems.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  } else if (type === "time") {
+    currentItems.sort((a, b) => a.id.localeCompare(b.id));
     if (btnSortTime) { btnSortTime.style.background = "#3182ce"; btnSortTime.style.color = "white"; }
     if (btnSortAsc) { btnSortAsc.style.background = "#edf2f7"; btnSortAsc.style.color = "black"; }
   }
-
-  // 元データ(wordData)の該当カテゴリ内 items を強制同期してDBに書き込み
+  appendDebugLog("SORT", `ソート処理を実行しました: タイプ = ${type}`);
   syncWordDataOrder();
-  await saveToLocalStorage();
-
   currentCardIndex = 0;
-  if (typeof updateCardView === "function") updateCardView();
+  updateCardView();
   updateListView();
 }
 
-if (btnSortAsc) btnSortAsc.addEventListener("click", () => { currentSortType = "asc"; applySorting(); });
-if (btnSortTime) btnSortTime.addEventListener("click", () => { currentSortType = "time"; applySorting(); });
-
+if (btnSortAsc) btnSortAsc.addEventListener("click", () => { applySorting("asc"); });
+if (btnSortTime) btnSortTime.addEventListener("click", () => { applySorting("time"); });
 
 // ========================================================
 // 10. タブ切り替えロジック
@@ -723,9 +783,9 @@ function hideAllViews() {
   if (btnListView) btnListView.classList.remove("active");
   if (btnRegisterView) btnRegisterView.classList.remove("active");
 }
-if (btnCardView) btnCardView.addEventListener("click", () => { hideAllViews(); btnCardView.classList.add("active"); cardView.classList.remove("hidden"); });
-if (btnListView) btnListView.addEventListener("click", () => { hideAllViews(); btnListView.classList.add("active"); listView.classList.remove("hidden"); updateListView(); });
-if (btnRegisterView) btnRegisterView.addEventListener("click", () => { hideAllViews(); btnRegisterView.classList.add("active"); registerView.classList.remove("hidden"); });
+if (btnCardView) btnCardView.addEventListener("click", () => { hideAllViews(); btnCardView.classList.add("active"); if (cardView) cardView.classList.remove("hidden"); });
+if (btnListView) btnListView.addEventListener("click", () => { hideAllViews(); btnListView.classList.add("active"); if (listView) listView.classList.remove("hidden"); updateListView(); });
+if (btnRegisterView) btnRegisterView.addEventListener("click", () => { hideAllViews(); btnRegisterView.classList.add("active"); if (registerView) registerView.classList.remove("hidden"); });
 
 // ========================================================
 // 11. 文字装飾機能
@@ -789,7 +849,7 @@ if (inputImage) {
       if (imgPreviewContainer) imgPreviewContainer.classList.remove("hidden");
     } catch (err) {
       alert("画像の圧縮処理に失敗しました。");
-      console.error(err);
+      appendDebugLog("IMAGE-ERROR", "画像圧縮エラー:", err.message);
     }
   });
 }
@@ -800,101 +860,117 @@ if (btnClearImage) {
     if (inputImage) inputImage.value = "";
     if (imgPreviewContainer) imgPreviewContainer.classList.add("hidden");
     if (imgPreview) imgPreview.src = "";
+    appendDebugLog("IMAGE-CLEAR", "選択画像をクリアしました。");
   });
 }
 
 function initRegisterSelects() {
   if (!regLarge) return;
   regLarge.innerHTML = '<option value="">-- 既存の大項目 --</option>';
-  wordData.categories.forEach(cat => {
-    const opt = document.createElement("option");
-    opt.value = cat.id;
-    opt.textContent = cat.name;
-    regLarge.appendChild(opt);
-  });
-  regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
-  regMedium.disabled = true;
-  regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
-  regSmall.disabled = true;
+  if (wordData && Array.isArray(wordData.categories)) {
+    wordData.categories.forEach(cat => {
+      const opt = document.createElement("option");
+      opt.value = cat.id;
+      opt.textContent = cat.name;
+      regLarge.appendChild(opt);
+    });
+  }
+  if (regMedium) {
+    regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
+    regMedium.disabled = true;
+  }
+  if (regSmall) {
+    regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
+    regSmall.disabled = true;
+  }
 }
 
 if (regLarge) {
   regLarge.addEventListener("change", (e) => {
     const largeId = e.target.value;
-    regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
-    regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
-    regSmall.disabled = true;
-    if (!largeId) { regMedium.disabled = true; return; }
-    const largeCat = wordData.categories.find(c => String(c.id) === String(largeId));
-    if (largeCat && largeCat.subcategories) {
+    if (regMedium) regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
+    if (regSmall) {
+      regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
+      regSmall.disabled = true;
+    }
+    if (!largeId) { if (regMedium) regMedium.disabled = true; return; }
+    const largeCat = wordData.categories.find(c => c.id === largeId);
+    if (largeCat && Array.isArray(largeCat.subcategories)) {
       largeCat.subcategories.forEach(sub => {
         const opt = document.createElement("option");
         opt.value = sub.id;
         opt.textContent = sub.name;
-        regMedium.appendChild(opt);
+        if (regMedium) regMedium.appendChild(opt);
       });
-      regMedium.disabled = false;
+      if (regMedium) regMedium.disabled = false;
     }
   });
 }
 
 if (regMedium) {
   regMedium.addEventListener("change", (e) => {
-    const largeId = regLarge.value;
+    const largeId = regLarge ? regLarge.value : "";
     const mediumId = e.target.value;
-    regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
-    if (!mediumId) { regSmall.disabled = true; return; }
-    const largeCat = wordData.categories.find(c => String(c.id) === String(largeId));
-    const mediumCat = largeCat?.subcategories?.find(s => String(s.id) === String(mediumId));
-    if (mediumCat && mediumCat.sections) {
+    if (regSmall) regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
+    if (!mediumId) { if (regSmall) regSmall.disabled = true; return; }
+    const largeCat = wordData.categories.find(c => c.id === largeId);
+    const mediumCat = largeCat && Array.isArray(largeCat.subcategories) ? largeCat.subcategories.find(s => s.id === mediumId) : null;
+    if (mediumCat && Array.isArray(mediumCat.sections)) {
       mediumCat.sections.forEach(sec => {
         const opt = document.createElement("option");
         opt.value = sec.id;
         opt.textContent = sec.name;
-        regSmall.appendChild(opt);
+        if (regSmall) regSmall.appendChild(opt);
       });
-      regSmall.disabled = false;
+      if (regSmall) regSmall.disabled = false;
     }
   });
 }
 
 window.startEditItem = function(itemId) {
   let foundItem = null;
-  wordData.categories.forEach(c => {
-    if (!c.subcategories) return;
-    c.subcategories.forEach(s => {
-      if (!s.sections) return;
-      s.sections.forEach(sec => {
-        if (!sec.items) return;
-        const item = sec.items.find(i => String(i.id) === String(itemId));
-        if (item) foundItem = item;
-      });
+  if (wordData && Array.isArray(wordData.categories)) {
+    wordData.categories.forEach(c => {
+      if (Array.isArray(c.subcategories)) {
+        c.subcategories.forEach(s => {
+          if (Array.isArray(s.sections)) {
+            s.sections.forEach(sec => {
+              const item = sec.items.find(i => i.id === itemId);
+              if (item) foundItem = item;
+            });
+          }
+        });
+      }
     });
-  });
+  }
 
   if (!foundItem) return;
 
   editingItemId = itemId;
-  inputWord.value = foundItem.word;
-  inputMeaning.value = foundItem.meaning;
+  if (inputWord) inputWord.value = foundItem.word;
+  if (inputMeaning) inputMeaning.value = foundItem.meaning;
   if (foundItem.image) {
     base64ImageData = foundItem.image;
-    imgPreview.src = base64ImageData;
-    imgPreviewContainer.classList.remove("hidden");
+    if (imgPreview) imgPreview.src = base64ImageData;
+    if (imgPreviewContainer) imgPreviewContainer.classList.remove("hidden");
   } else {
     base64ImageData = "";
-    imgPreviewContainer.classList.add("hidden");
+    if (imgPreviewContainer) imgPreviewContainer.classList.add("hidden");
   }
 
   document.getElementById("register-category-area")?.classList.add("hidden");
   document.getElementById("register-hr")?.classList.add("hidden");
   document.getElementById("edit-mode-notice")?.classList.remove("hidden");
   btnCancelEdit?.classList.remove("hidden");
-  document.getElementById("register-headline").textContent = "✏️ 登録済単語の修正";
-  btnRegister.textContent = "修正を確定する";
-  btnRegister.style.backgroundColor = "#ecc94b";
-  btnRegister.style.color = "black";
+  const headline = document.getElementById("register-headline");
+  if (headline) headline.textContent = "✏️ 登録済単語の修正";
+  if (btnRegister) {
+    btnRegister.textContent = "修正を確定する";
+    btnRegister.style.backgroundColor = "#ecc94b";
+    btnRegister.style.color = "black";
+  }
 
+  appendDebugLog("EDIT-START", `単語修正モードに入りました (ID: ${itemId})`);
   if (btnRegisterView) btnRegisterView.click();
 };
 
@@ -911,7 +987,8 @@ function exitEditMode() {
   document.getElementById("register-hr")?.classList.remove("hidden");
   document.getElementById("edit-mode-notice")?.classList.add("hidden");
   btnCancelEdit?.classList.add("hidden");
-  document.getElementById("register-headline").textContent = "📝 新しい単語・項目の登録";
+  const headline = document.getElementById("register-headline");
+  if (headline) headline.textContent = "📝 新しい単語・項目の登録";
   if (btnRegister) {
     btnRegister.textContent = "この内容で登録する";
     btnRegister.style.backgroundColor = "#3182ce";
@@ -923,33 +1000,33 @@ if (btnCancelEdit) btnCancelEdit.addEventListener("click", exitEditMode);
 window.deleteItem = function(itemId) {
   if (!confirm("本当にこの単語を削除してもよろしいですか？")) return;
 
-  wordData.categories.forEach(c => {
-    if (!c.subcategories) return;
-    c.subcategories.forEach(s => {
-      if (!s.sections) return;
-      s.sections.forEach(sec => {
-        if (!sec.items) return;
-        const index = sec.items.findIndex(i => String(i.id) === String(itemId));
-        if (index !== -1) {
-          sec.items.splice(index, 1);
-        }
-      });
+  if (wordData && Array.isArray(wordData.categories)) {
+    wordData.categories.forEach(c => {
+      if (Array.isArray(c.subcategories)) {
+        c.subcategories.forEach(s => {
+          if (Array.isArray(s.sections)) {
+            s.sections.forEach(sec => {
+              const index = sec.items.findIndex(i => i.id === itemId);
+              if (index !== -1) {
+                sec.items.splice(index, 1);
+              }
+            });
+          }
+        });
+      }
     });
-  });
+  }
 
+  appendDebugLog("DELETE", `単語を削除しました (ID: ${itemId})`);
   saveToLocalStorage();
 
   if (currentSmallId) {
-    let foundSec = null;
-    wordData.categories.forEach(c => {
-      c.subcategories?.forEach(s => {
-        s.sections?.forEach(sec => {
-          if (String(sec.id) === String(currentSmallId)) foundSec = sec;
-        });
-      });
-    });
-    currentItems = foundSec ? [...foundSec.items] : [];
-    applySorting();
+    const largeCat = wordData.categories.find(c => c.id === selectLarge.value);
+    const mediumCat = largeCat && Array.isArray(largeCat.subcategories) ? largeCat.subcategories.find(s => s.id === selectMedium.value) : null;
+    const section = mediumCat && Array.isArray(mediumCat.sections) ? mediumCat.sections.find(sec => sec.id === currentSmallId) : null;
+    currentItems = section ? [...section.items] : [];
+    updateCardView();
+    updateListView();
   } else {
     updateListView();
   }
@@ -958,8 +1035,8 @@ window.deleteItem = function(itemId) {
 
 if (btnRegister) {
   btnRegister.addEventListener("click", () => {
-    const wordVal = inputWord.value.trim();
-    const meaningVal = inputMeaning.value.trim();
+    const wordVal = inputWord ? inputWord.value.trim() : "";
+    const meaningVal = inputMeaning ? inputMeaning.value.trim() : "";
 
     if (!wordVal || (!meaningVal && !base64ImageData)) {
       alert("単語と意味を入力してください。");
@@ -968,72 +1045,85 @@ if (btnRegister) {
 
     if (editingItemId) {
       let success = false;
-      wordData.categories.forEach(c => {
-        c.subcategories?.forEach(s => {
-          s.sections?.forEach(sec => {
-            const item = sec.items?.find(i => String(i.id) === String(editingItemId));
-            if (item) {
-              item.word = wordVal;
-              item.meaning = meaningVal;
-              item.image = base64ImageData;
-              success = true;
-            }
-          });
+      if (wordData && Array.isArray(wordData.categories)) {
+        wordData.categories.forEach(c => {
+          if (Array.isArray(c.subcategories)) {
+            c.subcategories.forEach(s => {
+              if (Array.isArray(s.sections)) {
+                s.sections.forEach(sec => {
+                  const item = sec.items.find(i => i.id === editingItemId);
+                  if (item) {
+                    item.word = wordVal;
+                    item.meaning = meaningVal;
+                    item.image = base64ImageData;
+                    success = true;
+                  }
+                });
+              }
+            });
+          }
         });
-      });
+      }
 
       if (success) {
+        appendDebugLog("EDIT-SUCCESS", `単語の修正を確定しました (ID: ${editingItemId})`);
         alert("単語を修正しました！");
         saveToLocalStorage();
 
         if (currentSmallId) {
           let foundSec = null;
           wordData.categories.forEach(c => {
-            c.subcategories?.forEach(s => {
-              s.sections?.forEach(sec => {
-                if (String(sec.id) === String(currentSmallId)) foundSec = sec;
+            if (Array.isArray(c.subcategories)) {
+              c.subcategories.forEach(s => {
+                if (Array.isArray(s.sections)) {
+                  s.sections.forEach(sec => {
+                    if (sec.id === currentSmallId) foundSec = sec;
+                  });
+                }
               });
-            });
+            }
           });
           if (foundSec) currentItems = [...foundSec.items];
-          applySorting();
+          updateCardView();
+          updateListView();
         }
 
         exitEditMode();
         if (btnListView) btnListView.click();
       } else {
+        appendDebugLog("EDIT-ERROR", `修正対象の単語が見つかりませんでした (ID: ${editingItemId})`);
         alert("エラー: 修正対象の単語が見つかりませんでした。");
         exitEditMode();
       }
 
     } else {
-      let largeId = regLarge.value;
-      let largeName = newLarge.value.trim();
-      let mediumId = regMedium.value;
-      let mediumName = newMedium.value.trim();
-      let smallId = regSmall.value;
-      let smallName = newSmall.value.trim();
+      let largeId = regLarge ? regLarge.value : "";
+      let largeName = newLarge ? newLarge.value.trim() : "";
+      let mediumId = regMedium ? regMedium.value : "";
+      let mediumName = newMedium ? newMedium.value.trim() : "";
+      let smallId = regSmall ? regSmall.value : "";
+      let smallName = newSmall ? newSmall.value.trim() : "";
 
       if (!largeId && !largeName) { alert("大項目を選択・入力してください。"); return; }
       if (largeId && !mediumId && !mediumName) { alert("中項目を選択・入力してください。"); return; }
       if ((largeId && mediumId) && !smallId && !smallName) { alert("小項目を選択・入力してください。"); return; }
 
       let isNewLarge = !largeId;
-      let targetLarge = largeId ? wordData.categories.find(c => String(c.id) === String(largeId)) : { id: "large-" + Date.now(), name: largeName, subcategories: [] };
+      let targetLarge = largeId ? wordData.categories.find(c => c.id === largeId) : { id: "large-" + Date.now(), name: largeName, subcategories: [] };
       if (isNewLarge) {
         wordData.categories.push(targetLarge);
         largeId = targetLarge.id;
       }
 
       let isNewMedium = !mediumId;
-      let targetMedium = mediumId ? targetLarge.subcategories.find(s => String(s.id) === String(mediumId)) : { id: "medium-" + Date.now(), name: mediumName || "未分類の中項目", sections: [] };
+      let targetMedium = mediumId ? targetLarge.subcategories.find(s => s.id === mediumId) : { id: "medium-" + Date.now(), name: mediumName || "未分類の中項目", sections: [] };
       if (isNewMedium) {
         targetLarge.subcategories.push(targetMedium);
         mediumId = targetMedium.id;
       }
 
       let isNewSmall = !smallId;
-      let targetSmall = smallId ? targetMedium.sections.find(sec => String(sec.id) === String(smallId)) : { id: "small-" + Date.now(), name: smallName || "未分類の小項目", items: [] };
+      let targetSmall = smallId ? targetMedium.sections.find(sec => sec.id === smallId) : { id: "small-" + Date.now(), name: smallName || "未分類の小項目", items: [] };
       if (isNewSmall) {
         targetMedium.sections.push(targetSmall);
         smallId = targetSmall.id;
@@ -1047,78 +1137,34 @@ if (btnRegister) {
         memorized: false
       };
       targetSmall.items.push(newItem);
+
+      appendDebugLog("REGISTER-NEW", `新しい単語を登録しました`, { itemId: newItem.id, word: wordVal, sectionId: targetSmall.id });
       alert(`単語を登録しました！`);
 
-      inputWord.value = "";
-      inputMeaning.value = "";
+      if (inputWord) inputWord.value = "";
+      if (inputMeaning) inputMeaning.value = "";
       base64ImageData = "";
-      inputImage.value = "";
-      imgPreviewContainer.classList.add("hidden");
-      imgPreview.src = "";
-      newLarge.value = "";
-      newMedium.value = "";
-      newSmall.value = "";
+      if (inputImage) inputImage.value = "";
+      if (imgPreviewContainer) imgPreviewContainer.classList.add("hidden");
+      if (imgPreview) imgPreview.src = "";
+      if (newLarge) newLarge.value = "";
+      if (newMedium) newMedium.value = "";
+      if (newSmall) newSmall.value = "";
 
-      if (String(currentSmallId) === String(targetSmall.id)) {
+      if (currentSmallId === targetSmall.id) {
         currentItems = [...targetSmall.items];
-        applySorting();
+        updateCardView();
+        updateListView();
       }
 
       saveToLocalStorage();
-      initLargeSelect();
-
-      regLarge.innerHTML = '<option value="">-- 既存の大項目 --</option>';
-      wordData.categories.forEach(cat => {
-        const opt = document.createElement("option");
-        opt.value = cat.id;
-        opt.textContent = cat.name;
-        regLarge.appendChild(opt);
-      });
-      regLarge.value = largeId;
-
-      regMedium.innerHTML = '<option value="">-- 既存の中項目 --</option>';
-      if (largeId) {
-        const activeLarge = wordData.categories.find(c => String(c.id) === String(largeId));
-        if (activeLarge && activeLarge.subcategories) {
-          activeLarge.subcategories.forEach(sub => {
-            const opt = document.createElement("option");
-            opt.value = sub.id;
-            opt.textContent = sub.name;
-            regMedium.appendChild(opt);
-          });
-          regMedium.disabled = false;
-          regMedium.value = mediumId;
-        }
-      } else {
-        regMedium.disabled = true;
-      }
-
-      regSmall.innerHTML = '<option value="">-- 既存の小項目 --</option>';
-      if (largeId && mediumId) {
-        const activeLarge = wordData.categories.find(c => String(c.id) === String(largeId));
-        const activeMedium = activeLarge?.subcategories?.find(s => String(s.id) === String(mediumId));
-        if (activeMedium && activeMedium.sections) {
-          activeMedium.sections.forEach(sec => {
-            const opt = document.createElement("option");
-            opt.value = sec.id;
-            opt.textContent = sec.name;
-            regSmall.appendChild(opt);
-          });
-          regSmall.disabled = false;
-          regSmall.value = smallId;
-        }
-      } else {
-        regSmall.disabled = true;
-      }
+      refreshAllDropdowns();
     }
   });
 }
 
-initRegisterSelects();
-exitEditMode();
-
 // ========================================================
-// 13. 同期機能（安定化エクスポート・インポート）
+// 13. 同期機能（書き出し・インポート補正＆確実な保存処理）
 // ========================================================
 const btnExportEl = document.getElementById("btn-export");
 const btnImportTriggerEl = document.getElementById("btn-import-trigger");
@@ -1130,26 +1176,14 @@ if (btnImportTriggerEl && fileImportEl) {
   });
 }
 
-// 修正版：エクスポート処理（古いイベントを強制リセット）
 if (btnExportEl) {
-  // 古いイベントリスナーの多重起動を防ぐため、ボタンを一度複製して置き換える（安全策）
-  const newBtnExportEl = btnExportEl.cloneNode(true);
-  btnExportEl.parentNode.replaceChild(newBtnExportEl, btnExportEl);
-
-  newBtnExportEl.addEventListener("click", async () => {
-    console.log("エクスポート処理を開始します...");
+  btnExportEl.addEventListener("click", async () => {
     try {
-      // 1. 書き出し直前に画面上の現在の並び順を wordData に強制上書き
-      if (typeof syncWordDataOrder === "function") {
-        syncWordDataOrder();
-      }
+      appendDebugLog("EXPORT-START", "JSON書き出し処理を開始します...");
 
-      // 2. データベース側も最新状態に更新
-      await saveToLocalStorage();
+      syncWordDataOrder();
 
-      // 3. 確定した wordData を JSON として出力
       const jsonString = JSON.stringify(wordData, null, 2);
-
       const fileName = `tango_data_${new Date().toISOString().slice(0, 10)}.json`;
       const blob = new Blob([jsonString], { type: "application/json" });
 
@@ -1160,9 +1194,9 @@ if (btnExportEl) {
       a.click();
       document.body.removeChild(a);
 
-      console.log("🎉 エクスポート完了！");
+      appendDebugLog("EXPORT-SUCCESS", `JSON書き出し完了: ${fileName} (文字列長: ${jsonString.length}文字)`);
     } catch (err) {
-      console.error(err);
+      appendDebugLog("EXPORT-ERROR", "書き出し失敗:", err.message);
       alert("書き出しに失敗しました。");
     }
   });
@@ -1173,23 +1207,45 @@ if (fileImportEl) {
     const file = e.target.files[0];
     if (!file) return;
 
+    appendDebugLog("IMPORT-START", `JSONファイルのインポートを開始します: ${file.name}`);
+
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        const importedData = JSON.parse(event.target.result);
+        const rawJson = JSON.parse(event.target.result);
 
-        if (importedData && Array.isArray(importedData.categories)) {
-          if (confirm("データを上書き同期しますか？")) {
-            wordData = importedData;
+        const parsedData = normalizeWordData(rawJson);
+
+        if (parsedData && Array.isArray(parsedData.categories) && parsedData.categories.length > 0) {
+          appendDebugLog("IMPORT-PARSED", "JSONデータの解析・補正が成功しました", {
+            categoriesCount: parsedData.categories.length,
+            firstCategoryName: parsedData.categories[0]?.name
+          });
+
+          if (confirm(`大項目数 ${parsedData.categories.length} 件のデータで上書き同期しますか？`)) {
+            wordData = parsedData;
+
             await saveToLocalStorage();
-            alert("同期完了！");
-            location.reload();
+            try {
+              localStorage.setItem("wordData", JSON.stringify(wordData));
+            } catch (lsErr) {
+              appendDebugLog("IMPORT-WARN", "localStorageへのバックアップ保存はスキップされました:", lsErr.message);
+            }
+
+            refreshAllDropdowns();
+
+            appendDebugLog("IMPORT-SUCCESS", "データ同期完了。プルダウンを直接更新しました。");
+            alert("データの同期・読み込みが完了しました！");
+          } else {
+            appendDebugLog("IMPORT-CANCEL", "ユーザーによってインポートがキャンセルされました。");
           }
         } else {
-          alert("無効なデータ形式です。単語帳のJSONファイルを選択してください。");
+          appendDebugLog("IMPORT-INVALID", "有効なカテゴリー構造が見つかりませんでした。", rawJson);
+          alert("選択されたJSONデータ内に大項目(categories)データが見つかりませんでした。");
         }
       } catch (err) {
-        alert("エラー: " + err.message);
+        appendDebugLog("IMPORT-ERROR", "インポート中に例外が発生しました:", err.message);
+        alert("エラー: JSONファイルの形式が正しくありません。\n" + err.message);
       }
       fileImportEl.value = "";
     };
