@@ -31,7 +31,7 @@ let wordData = {
 // 2. IndexedDB 制御モジュール
 // ========================================================
 const DB_NAME = "TangoCardDB";
-const DB_VERSION = 1;
+const DB_VERSION = 2; // バージョンを上げて onupgradeneeded を確実に実行させます
 const STORE_NAME = "app_data";
 
 function openDB() {
@@ -49,14 +49,23 @@ function openDB() {
 }
 
 async function loadDataFromDB() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readonly");
-    const store = tx.objectStore(STORE_NAME);
-    const request = store.get("wordData");
-    request.onsuccess = () => resolve(request.result || null);
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        resolve(null);
+        return;
+      }
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.get("wordData");
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.error("IndexedDBからの読み込みエラー:", err);
+    return null;
+  }
 }
 
 // 既存コードとの互換性を保つための IndexedDB 保存関数
@@ -64,6 +73,10 @@ async function saveToLocalStorage() {
   try {
     const db = await openDB();
     return new Promise((resolve, reject) => {
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        reject(new Error(`ObjectStore '${STORE_NAME}' が見つかりません。`));
+        return;
+      }
       const tx = db.transaction(STORE_NAME, "readwrite");
       const store = tx.objectStore(STORE_NAME);
       store.put(wordData, "wordData");
@@ -72,6 +85,12 @@ async function saveToLocalStorage() {
     });
   } catch (err) {
     console.error("IndexedDBへの保存に失敗しました:", err);
+    // フォールバックとして localStorage にも保持
+    try {
+      localStorage.setItem("wordData", JSON.stringify(wordData));
+    } catch (e) {
+      console.error("localStorageへの保存も失敗しました:", e);
+    }
   }
 }
 
@@ -462,7 +481,7 @@ if (cardImg) {
 }
 
 // ========================================================
-// 8. 単語一覧描画＆ドラッグ移動
+// 8. 単語一覧描画＆ドラッグ移動（並び替え機能付き）
 // ========================================================
 function updateListView() {
   const tbody = document.getElementById("word-list-tbody");
@@ -483,6 +502,7 @@ function updateListView() {
 
     const tdDrag = document.createElement("td");
     tdDrag.className = "drag-handle";
+    tdDrag.style.cursor = "grab";
     tdDrag.innerHTML = "≡";
     tr.appendChild(tdDrag);
 
@@ -510,6 +530,7 @@ function updateListView() {
     `;
     tr.appendChild(tdAction);
 
+    // --- ドラッグ＆ドロップ イベント設定 ---
     tr.addEventListener("dragstart", (e) => {
       tr.classList.add("dragging");
       e.dataTransfer.effectAllowed = "move";
@@ -519,13 +540,16 @@ function updateListView() {
     tr.addEventListener("dragend", () => {
       tr.classList.remove("dragging");
       const rows = tbody.querySelectorAll("tr");
-      rows.forEach(r => r.style.borderTop = "");
-      rows.forEach(r => r.style.borderBottom = "");
+      rows.forEach(r => {
+        r.style.borderTop = "";
+        r.style.borderBottom = "";
+      });
     });
 
     tr.addEventListener("dragover", (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
+
       const bounding = tr.getBoundingClientRect();
       const offset = e.clientY - bounding.top;
       if (offset > bounding.height / 2) {
@@ -542,21 +566,28 @@ function updateListView() {
       tr.style.borderBottom = "";
     });
 
-    tr.addEventListener("drop", (e) => {
+    tr.addEventListener("drop", async (e) => {
       e.preventDefault();
       tr.style.borderTop = "";
       tr.style.borderBottom = "";
 
       const fromIndex = parseInt(e.dataTransfer.getData("text/plain"), 10);
       const toIndex = index;
-      if (fromIndex === toIndex) return;
 
-      const targetItem = currentItems.splice(fromIndex, 1)[0];
-      currentItems.splice(toIndex, 0, targetItem);
+      if (isNaN(fromIndex) || fromIndex === toIndex) return;
 
+      // 配列要素の並び替え
+      const [movedItem] = currentItems.splice(fromIndex, 1);
+      currentItems.splice(toIndex, 0, movedItem);
+
+      // 元データ（wordData）に反映し、IndexedDBへ保存
       syncWordDataOrder();
-      saveToLocalStorage();
+      await saveToLocalStorage();
+
+      // 一覧ビューとカードビューインデックスの初期化更新
+      currentCardIndex = 0;
       updateListView();
+      if (typeof updateCardView === "function") updateCardView();
     });
 
     tbody.appendChild(tr);
@@ -1024,7 +1055,6 @@ if (btnExportEl) {
       const fileName = `tango_data_${new Date().toISOString().slice(0, 10)}.json`;
       const blob = new Blob([jsonString], { type: "application/json" });
 
-      // iOS Safari等の直接ダウンロード用フォールバック
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = fileName;
